@@ -1,7 +1,5 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE FlexibleInstances #-}
 
 module Protocol.Internal.Util where
@@ -9,26 +7,58 @@ module Protocol.Internal.Util where
 import Clash.Prelude
 
 
-
+-- | Heterogeneous List.
+-- Although it will be mostly used with tags,
+-- the order matters when represented by tuples.
 data HList (ts :: [Type]) where
   HNil :: HList '[]
   HCons :: t -> HList ts -> HList (t ': ts)
 
+-- | Tagged element
+data Tagged  (a :: Type)   (s :: Symbol) = Tagged a
+
+-- | Tagged HList
+data Tagged2 (a :: [Type]) (s :: Symbol) = Tagged2 (HList a)
+
+-- | HList of tagged elements
+class ListTagged ts
+instance ListTagged '[]
+instance ListTagged ts => ListTagged ((t `Tagged` s) ': ts)
+
+-- | HList of tagged HLists
+class ListTagged2 ts
+instance ListTagged2 '[]
+instance (ListTagged t, ListTagged2 ts) => ListTagged2 ((t `Tagged2` s) ': ts)
+
 
 infixr 4 :%, :%%
 
+-- | Pattern match on tagged HLists
 pattern (:%) :: t -> HList ts -> HList (Tagged t s ': ts)
 pattern a :% b <- HCons (Tagged a) b
   where a :% b = HCons (Tagged a) b
 {-# COMPLETE (:%) #-}
 
+-- | Pattern match on tagged HLists
 pattern (:%%) :: HList ts -> HList tss -> HList (Tagged2 ts s ': tss)
 pattern a :%% b <- HCons (Tagged2 a) b
   where a :%% b = HCons (Tagged2 a) b
 {-# COMPLETE (:%%) #-}
 
 
+-- | Search for `s` in `ts`, with the result `tr`
+class Elem (s :: Symbol) (ts :: [Type]) (tr :: Type)
+instance                   ListTagged ts                => Elem s ((tr `Tagged` s ) ': ts) tr
+instance {-# OVERLAPS #-} (ListTagged ts, Elem s ts tr) => Elem s ((t  `Tagged` s') ': ts) tr
 
+-- | Search for `p` in `ts`, then `q` in the result, with the final result `tr`
+class Elem2 (p :: Symbol) (q :: Symbol) (ts :: [Type]) (tr :: Type)
+instance                  (ListTagged2 ts, Elem q t tr    ) => Elem2 p q ((t `Tagged2` p ) ': ts) tr
+instance {-# OVERLAPS #-} (ListTagged2 ts, Elem2 p q ts tr) => Elem2 p q ((t `Tagged2` p') ': ts) tr
+
+
+
+-- | Represent HLists with Tuples, erasing all tags
 class Tuplify a where
   type TupleRep a
   tuplify   :: a -> TupleRep a
@@ -45,14 +75,13 @@ instance Tuplify (HList ts) => Tuplify (HList ((t `Tagged` s) ': ts)) where
   untuplify (x, xs) = x :% untuplify xs
 
 tumap
-  :: ( Tuplify a
-     , Tuplify b
-     )
+  :: (Tuplify a, Tuplify b)
   => (a -> b)
   -> (TupleRep a -> TupleRep b)
 tumap f = tuplify . f . untuplify
 
 
+-- | Represent HLists with Tuples, erasing all tags
 class Tuplify2 a where
   type TupleRep2 a
   tuplify2   :: a -> TupleRep2 a
@@ -71,31 +100,7 @@ instance (Tuplify2 (HList tss), Tuplify (HList ts)) =>
   untuplify2 (xs, xss) = untuplify xs :%% untuplify2 xss
 
 tumap2
-  :: ( Tuplify2 a
-     , Tuplify2 b
-     )
+  :: (Tuplify2 a, Tuplify2 b)
   => (a -> b)
   -> (TupleRep2 a -> TupleRep2 b)
 tumap2 f = tuplify2 . f . untuplify2
-
-
-
-data Tagged  (a :: Type)   (s :: Symbol) = Tagged a
-data Tagged2 (a :: [Type]) (s :: Symbol) = Tagged2 (HList a)
-
-class ListTagged ts
-instance ListTagged '[]
-instance ListTagged ts => ListTagged ((t `Tagged` s) ': ts)
-
-class ListTagged2 ts
-instance ListTagged2 '[]
-instance (ListTagged t, ListTagged2 ts) => ListTagged2 ((t `Tagged2` s) ': ts)
-
-
-class Elem (s :: Symbol) (ts :: [Type]) (tr :: Type)
-instance                   ListTagged ts                => Elem s ((tr `Tagged` s ) ': ts) tr
-instance {-# OVERLAPS #-} (ListTagged ts, Elem s ts tr) => Elem s ((t  `Tagged` s') ': ts) tr
-
-class Elem2 (p :: Symbol) (q :: Symbol) (ts :: [Type]) (tr :: Type)
-instance                  (ListTagged2 ts, Elem q t tr    ) => Elem2 p q ((t `Tagged2` p ) ': ts) tr
-instance {-# OVERLAPS #-} (ListTagged2 ts, Elem2 p q ts tr) => Elem2 p q ((t `Tagged2` p') ': ts) tr

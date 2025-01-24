@@ -4,7 +4,7 @@ import Clash.Prelude
 
 import Protocol.Internal.Util
 
--- The Connector Free Monad
+-- | The Connector Free Monad
 data Connector (p :: [Type]) (s :: Type) (a :: Type) where
   Pure :: a -> Connector p s a
   Bind :: Connector p s a -> (a -> Connector p s b) -> Connector p s b
