@@ -83,7 +83,8 @@ common common-options
 
     lens,
     mtl,
-    generic-monoid
+    generic-monoid,
+    extra
 
 
 library
@@ -130,7 +131,8 @@ test-suite test-library
   ghc-options: -threaded
   main-is: unittests.hs
   other-modules:
-    Tests.Simple
+    Tests.Simple,
+    Tests.Arbiter
   build-depends:
     handshake-protocol,
     QuickCheck,

@@ -7,7 +7,9 @@ module Protocol.Connector
   , send
   , listen1
   , listen2
-  , (///)
+  , listen4
+  , parallel
+  , infloop
   ) where
 
 import Clash.Prelude
@@ -26,6 +28,9 @@ data Connector (p :: [Type]) (s :: Type) (a :: Type) where
 
   -- | Binding two actions, blocking the latter until the former finishes.
   Bind :: Connector p s a -> (a -> Connector p s b) -> Connector p s b
+
+  -- | Perform an action forever
+  Forever :: Connector p s () -> Connector p s ()
 
   -- | Perform two actions in parallel, blocking subsequent actions
   -- until both actions finish.
@@ -114,8 +119,6 @@ listen1 f1 l1 = Listen $
   Listen1 (Proxy :: Proxy pt1) (Proxy :: Proxy ch1) (\t -> (l1 .~ f1 t) mempty)
 
 -- | Listen to 2 channels.
--- `listenN` for arbitrary `N` can be probably implemented with TH.
--- But for now, these are enough.
 listen2
   :: forall
      (pt1 :: Symbol) (ch1 :: Symbol)
@@ -135,9 +138,46 @@ listen2 f1 l1 f2 l2 = Listen $ Listen2
   (Listen1 (Proxy :: Proxy pt1) (Proxy :: Proxy ch1) (\t -> (l1 .~ f1 t) mempty))
   (Listen1 (Proxy :: Proxy pt2) (Proxy :: Proxy ch2) (\t -> (l2 .~ f2 t) mempty))
 
+-- | Listen to 4 channels.
+-- `listenN` for arbitrary `N` can be probably implemented with TH.
+listen4
+  :: forall
+     (pt1 :: Symbol) (ch1 :: Symbol)
+     (pt2 :: Symbol) (ch2 :: Symbol)
+     (pt3 :: Symbol) (ch3 :: Symbol)
+     (pt4 :: Symbol) (ch4 :: Symbol)
+     {t1 :: Type} {a1 :: Type}
+     {t2 :: Type} {a2 :: Type}
+     {t3 :: Type} {a3 :: Type}
+     {t4 :: Type} {a4 :: Type}
+     {p :: [Type]} {s :: Type}
+  .  ( Monoid s
+     , Elem2 pt1 ch1 p (CoChannel t1)
+     , Elem2 pt2 ch2 p (CoChannel t2)
+     , Elem2 pt3 ch3 p (CoChannel t3)
+     , Elem2 pt4 ch4 p (CoChannel t4) )
+  => (t1 -> a1)
+  -> Setter' s a1
+  -> (t2 -> a2)
+  -> Setter' s a2
+  -> (t3 -> a3)
+  -> Setter' s a3
+  -> (t4 -> a4)
+  -> Setter' s a4
+  -> Connector p s ()
+listen4 f1 l1 f2 l2 f3 l3 f4 l4 = Listen $ Listen2
+  (Listen2
+    (Listen1 (Proxy :: Proxy pt1) (Proxy :: Proxy ch1) (\t -> (l1 .~ f1 t) mempty))
+    (Listen1 (Proxy :: Proxy pt2) (Proxy :: Proxy ch2) (\t -> (l2 .~ f2 t) mempty))
+  )
+  (Listen2
+    (Listen1 (Proxy :: Proxy pt3) (Proxy :: Proxy ch3) (\t -> (l3 .~ f3 t) mempty))
+    (Listen1 (Proxy :: Proxy pt4) (Proxy :: Proxy ch4) (\t -> (l4 .~ f4 t) mempty))
+  )
+
 
 -- | Alias for `Parallel` when the result are discarded.
-(///)
+parallel
   :: forall
      {a :: Type} {b :: Type}
      {p :: [Type]} {s :: Type}
@@ -145,4 +185,13 @@ listen2 f1 l1 f2 l2 = Listen $ Listen2
   => Connector p s a
   -> Connector p s b
   -> Connector p s ()
-(///) = Parallel (const (const ()))
+parallel = Parallel (const (const ())) 
+
+-- | Infinite loop
+infloop
+  :: forall
+     {p :: [Type]} {s :: Type}
+  .  Monoid s
+  => Connector p s ()
+  -> Connector p s ()
+infloop = Forever

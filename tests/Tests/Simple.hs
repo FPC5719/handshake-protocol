@@ -29,7 +29,7 @@ data CounterState = CounterState
 makeLenses 'CounterState
 
 simple :: Counter ()
-simple = do
+simple = infloop $ do
   listen1 @"In" @"Data" pure csInput
   inp <- use csInput
   if inp == pure 42
