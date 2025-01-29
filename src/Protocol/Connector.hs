@@ -2,8 +2,20 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 
+{-|
+Module      : Protocol.Connector
+Description : Monadic Connector for Handshake-Based Protocols.
+
+This module mainly defines the `Connector` monad, which provides
+basic operations for constructing an automaton that interacts
+with Handshake-Based data buses.
+-}
+
 module Protocol.Connector
+  -- * The Connector Monad
   ( Connector()
+  -- * Exposed Functions
+  -- $exposed
   , send
   , listen1
   , listen2
@@ -34,7 +46,7 @@ data Connector (p :: [Type]) (s :: Type) (a :: Type) where
 
   -- | Perform two actions in parallel, blocking subsequent actions
   -- until both actions finish.
-  -- Note: The behavior is different from `liftA2`.
+  -- @Note@: The behavior is different from `liftA2`.
   Parallel
     :: (a -> b -> c)
     -> Connector p s a
@@ -44,8 +56,7 @@ data Connector (p :: [Type]) (s :: Type) (a :: Type) where
   -- | Modify the inner register state.
   RegState :: (s -> (a, s)) -> Connector p s a
   
-  -- | Send a value with type `t` (which must be derived from the register `s`
-  -- and must not change before sent), to port `pt`, channel `ch`.
+  -- | Send a value with type `t`, to port `pt`, channel `ch`.
   Send
     :: Elem2 pt ch p (Channel t)
     => Proxy pt
@@ -53,8 +64,7 @@ data Connector (p :: [Type]) (s :: Type) (a :: Type) where
     -> (s -> t)
     -> Connector p s ()
 
-  -- | Listen to multiple channels. After one or more succeed,
-  -- the rest are blocked.
+  -- | Listen to multiple channels.
   Listen
     :: Listener p s
     -> Connector p s ()
@@ -79,7 +89,7 @@ data Listener (p :: [Type]) (s :: Type) where
     :: Elem2 pt ch p (CoChannel t)
     => Proxy pt
     -> Proxy ch
-    -> (t -> s)
+    -> (Maybe t -> (s -> s))
     -> Listener p s
   Listen2
     :: Listener p s
@@ -88,58 +98,94 @@ data Listener (p :: [Type]) (s :: Type) where
 
 
 
--- * Exposed functions
+-- $exposed
+--
 -- The exposed functions mainly use Lens APIs, and specify
 -- channels with type-level parameters.
+--
+-- As for `Connector p s`, the constraint `Monoid s` should
+-- be always satisfied.
+--
+-- In practice, `s` is usually a record type where all its
+-- fields are `Monoid`s like `First` or `Last`, since the
+-- `Semigroup` and `Monoid` instances can be derived, and
+-- the `Lens`es can be meanwhile built automatically.
 
 
 -- | Send a value to a channel.
+--
+-- Sending to multiple channels can be expressed by
+-- multiple `send`s in parallel.
 send
   :: forall
      (pt :: Symbol) (ch :: Symbol)
      {t :: Type} {p :: [Type]} {s :: Type}
   .  ( Monoid s
-     , Elem2 pt ch p (Channel t) )
+     , Elem2 pt ch p (Channel t)
+     )
   => Getter s t
+     -- ^ The data being sent must be derived from the register,
+     -- and must NOT change before sent.
   -> Connector p s ()
-send l = Send (Proxy :: Proxy pt) (Proxy :: Proxy ch) (view l)
+send l = Send (Proxy @pt) (Proxy @ch) (view l)
 
 -- | Listen to a single channel.
 listen1
   :: forall
      (pt1 :: Symbol) (ch1 :: Symbol)
      {t :: Type} {a :: Type}
-     {p :: [Type]} {s :: Type}
+     {f :: Type -> Type} {p :: [Type]} {s :: Type}
   .  ( Monoid s
-     , Elem2 pt1 ch1 p (CoChannel t) )
+     , Monoid (f a)
+     , Applicative f
+     , Elem2 pt1 ch1 p (CoChannel t)
+     )
   => (t -> a)
-  -> Setter' s a
+     -- ^ Transform the raw data from the channel to the
+     -- corresponding representation in the register.
+  -> Setter' s (f a)
+     -- ^ The setter of the corresponding register.
+     -- In practice, each listened channel probably corresponds to
+     -- separate parts of the register, while shared register parts
+     -- are permitted for efficiency.
   -> Connector p s ()
 listen1 f1 l1 = Listen $
-  Listen1 (Proxy :: Proxy pt1) (Proxy :: Proxy ch1) (\t -> (l1 .~ f1 t) mempty)
+  Listen1 (Proxy @pt1) (Proxy @ch1) (\t -> l1 .~ maybe mempty (pure . f1) t)
 
 -- | Listen to 2 channels.
+--
+-- The channels are blocked after one or more channels' transfers
+-- occur. If a transfer occur, the data is wrapped in `pure` before
+-- being set in the register. Otherwise `mempty` is used instead.
+-- Therefore, the subsequential program can determine whether a
+-- transfer has occured or not.
 listen2
   :: forall
      (pt1 :: Symbol) (ch1 :: Symbol)
      (pt2 :: Symbol) (ch2 :: Symbol)
      {t1 :: Type} {a1 :: Type}
      {t2 :: Type} {a2 :: Type}
-     {p :: [Type]} {s :: Type}
+     {f :: Type -> Type} {p :: [Type]} {s :: Type}
   .  ( Monoid s
+     , Monoid (f a1)
+     , Monoid (f a2)
+     , Applicative f
      , Elem2 pt1 ch1 p (CoChannel t1)
-     , Elem2 pt2 ch2 p (CoChannel t2) )
-  => (t1 -> a1)
-  -> Setter' s a1
-  -> (t2 -> a2)
-  -> Setter' s a2
+     , Elem2 pt2 ch2 p (CoChannel t2)
+     )
+  => (t1 -> a1)       -- ^ Transform the result from channel 1.
+  -> Setter' s (f a1) -- ^ Setter 1.
+  -> (t2 -> a2)       -- ^ Transform the result from channel 2.
+  -> Setter' s (f a2) -- ^ Setter 2.
   -> Connector p s ()
 listen2 f1 l1 f2 l2 = Listen $ Listen2
-  (Listen1 (Proxy :: Proxy pt1) (Proxy :: Proxy ch1) (\t -> (l1 .~ f1 t) mempty))
-  (Listen1 (Proxy :: Proxy pt2) (Proxy :: Proxy ch2) (\t -> (l2 .~ f2 t) mempty))
+  (Listen1 (Proxy @pt1) (Proxy @ch1) (\t -> l1 .~ maybe mempty (pure . f1) t))
+  (Listen1 (Proxy @pt2) (Proxy @ch2) (\t -> l2 .~ maybe mempty (pure . f2) t))
 
 -- | Listen to 4 channels.
+--
 -- `listenN` for arbitrary `N` can be probably implemented with TH.
+-- However, for now these are enough.
 listen4
   :: forall
      (pt1 :: Symbol) (ch1 :: Symbol)
@@ -150,48 +196,53 @@ listen4
      {t2 :: Type} {a2 :: Type}
      {t3 :: Type} {a3 :: Type}
      {t4 :: Type} {a4 :: Type}
-     {p :: [Type]} {s :: Type}
+     {f :: Type -> Type} {p :: [Type]} {s :: Type}
   .  ( Monoid s
+     , Monoid (f a1)
+     , Monoid (f a2)
+     , Monoid (f a3)
+     , Monoid (f a4)
+     , Applicative f
      , Elem2 pt1 ch1 p (CoChannel t1)
      , Elem2 pt2 ch2 p (CoChannel t2)
      , Elem2 pt3 ch3 p (CoChannel t3)
-     , Elem2 pt4 ch4 p (CoChannel t4) )
-  => (t1 -> a1)
-  -> Setter' s a1
-  -> (t2 -> a2)
-  -> Setter' s a2
-  -> (t3 -> a3)
-  -> Setter' s a3
-  -> (t4 -> a4)
-  -> Setter' s a4
+     , Elem2 pt4 ch4 p (CoChannel t4)
+     )
+  => (t1 -> a1)       -- ^ Transform the result from channel 1.
+  -> Setter' s (f a1) -- ^ Setter 1.
+  -> (t2 -> a2)       -- ^ Transform the result from channel 2.
+  -> Setter' s (f a2) -- ^ Setter 2.
+  -> (t3 -> a3)       -- ^ Transform the result from channel 3.
+  -> Setter' s (f a3) -- ^ Setter 3.
+  -> (t4 -> a4)       -- ^ Transform the result from channel 4.
+  -> Setter' s (f a4) -- ^ Setter 4.
   -> Connector p s ()
 listen4 f1 l1 f2 l2 f3 l3 f4 l4 = Listen $ Listen2
   (Listen2
-    (Listen1 (Proxy :: Proxy pt1) (Proxy :: Proxy ch1) (\t -> (l1 .~ f1 t) mempty))
-    (Listen1 (Proxy :: Proxy pt2) (Proxy :: Proxy ch2) (\t -> (l2 .~ f2 t) mempty))
+    (Listen1 (Proxy @pt1) (Proxy @ch1) (\t -> l1 .~ maybe mempty (pure . f1) t))
+    (Listen1 (Proxy @pt2) (Proxy @ch2) (\t -> l2 .~ maybe mempty (pure . f2) t))
   )
   (Listen2
-    (Listen1 (Proxy :: Proxy pt3) (Proxy :: Proxy ch3) (\t -> (l3 .~ f3 t) mempty))
-    (Listen1 (Proxy :: Proxy pt4) (Proxy :: Proxy ch4) (\t -> (l4 .~ f4 t) mempty))
+    (Listen1 (Proxy @pt3) (Proxy @ch3) (\t -> l3 .~ maybe mempty (pure . f3) t))
+    (Listen1 (Proxy @pt4) (Proxy @ch4) (\t -> l4 .~ maybe mempty (pure . f4) t))
   )
 
-
--- | Alias for `Parallel` when the result are discarded.
+-- | Alias for `Parallel` when the results are discarded.
 parallel
   :: forall
      {a :: Type} {b :: Type}
      {p :: [Type]} {s :: Type}
   .  Monoid s
-  => Connector p s a
-  -> Connector p s b
+  => Connector p s a -- ^ The result is discarded.
+  -> Connector p s b -- ^ The result is discarded.
   -> Connector p s ()
 parallel = Parallel (const (const ())) 
 
--- | Infinite loop
+-- | Perform an action infinitely.
 infloop
   :: forall
      {p :: [Type]} {s :: Type}
   .  Monoid s
-  => Connector p s ()
+  => Connector p s () -- ^ Action for an iteration.
   -> Connector p s ()
 infloop = Forever

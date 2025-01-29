@@ -30,7 +30,7 @@ makeLenses 'CounterState
 
 simple :: Counter ()
 simple = infloop $ do
-  listen1 @"In" @"Data" pure csInput
+  listen1 @"In" @"Data" id csInput
   inp <- use csInput
   if inp == pure 42
     then modify $ csCount %~ First . maybe (Just 0) (Just . (+1)) . getFirst
