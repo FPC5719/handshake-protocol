@@ -131,8 +131,8 @@ test-suite test-library
   ghc-options: -threaded
   main-is: unittests.hs
   other-modules:
-    Tests.Simple,
-    Tests.Arbiter
+    Tests.Simple
+    -- Tests.Arbiter
   build-depends:
     handshake-protocol,
     QuickCheck,

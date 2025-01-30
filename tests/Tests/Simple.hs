@@ -1,23 +1,27 @@
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE QualifiedDo #-}
 module Tests.Simple where
 
 import Clash.Prelude
 
 import Protocol.Channel
-import Protocol.Connector
+-- import Protocol.Connector
+import qualified Protocol.Connector as C
 import Protocol.Internal.Util
 
 import Control.Lens
-import Control.Monad.State.Class
+-- import Control.Monad.State.Class
 import Data.Maybe
 import Data.Monoid
 import Data.Monoid.Generic
 
-type Counter a = Connector
+data Counter a = forall r . Counter (C.Connector
   '[ Slave  (Handshake (Unsigned 8)) `Tagged2` "In"
    , Master (Handshake (Unsigned 8)) `Tagged2` "Out" ]
   CounterState
-  a
+  -- (Either C.IndexListen (Either () (Either () C.IndexSend)))
+  r
+  a)
 
 data CounterState = CounterState
   { _csInput :: First (Unsigned 8)
@@ -29,10 +33,10 @@ data CounterState = CounterState
 makeLenses 'CounterState
 
 simple :: Counter ()
-simple = infloop $ do
-  listen1 @"In" @"Data" id csInput
-  inp <- use csInput
+simple = Counter $ C.infloop $ C.do
+  C.listen1 @"In" @"Data" id csInput
+  inp <- C.gets (view csInput)
   if inp == pure 42
-    then modify $ csCount %~ First . maybe (Just 0) (Just . (+1)) . getFirst
-    else pure ()
-  send @"Out" @"Data" $ csCount . to (fromMaybe 0 . getFirst)
+    then C.modify $ csCount %~ First . maybe (Just 0) (Just . (+1)) . getFirst
+    else C.pure ()
+  C.send @"Out" @"Data" $ csCount . to (fromMaybe 0 . getFirst)
