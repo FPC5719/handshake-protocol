@@ -26,7 +26,7 @@ module Protocol.Connector where
   ) where
 -}
 
-import Clash.Prelude ((.), ($), const, maybe, Type, Symbol, Maybe, Either)
+import Clash.Prelude ((.), ($), const, maybe, Type, Symbol, Maybe(..), Either(..), Eq(..), NFDataX, Generic)
 import qualified Clash.Prelude as CP
 
 import Protocol.Internal.Util
@@ -36,6 +36,46 @@ import Control.Lens
 -- import Control.Monad.State.Class
 import Data.Monoid
 import Data.Proxy
+
+
+-- | Existential wrapper for `Connector`.
+data WrapConnector p s a
+  =  forall i
+  .  StateIndex i
+  => WrapConnector (Connector p s i a)
+
+-- | State index.
+class (NFDataX i, Eq i) => StateIndex i where
+  idxInit :: i
+  idxDone :: i
+
+instance StateIndex () where
+  idxInit = ()
+  idxDone = ()
+
+instance (StateIndex a, StateIndex b) => StateIndex (Either a b) where
+  idxInit = Left idxInit
+  idxDone = Right idxDone
+
+instance (StateIndex a, StateIndex b) => StateIndex (a, b) where
+  idxInit = (idxInit, idxInit)
+  idxDone = (idxDone, idxDone)
+
+
+data IndexSend = SendIdle | SendWork | SendDone
+  deriving (Generic, Eq, NFDataX)
+
+instance StateIndex IndexSend where
+  idxInit = SendIdle
+  idxDone = SendDone
+
+data IndexListen = ListenIdle | ListenWork | ListenDone
+  deriving (Generic, Eq, NFDataX)
+
+instance StateIndex IndexListen where
+  idxInit = ListenIdle
+  idxDone = ListenDone
+
 
 -- | The `Connector`.
 data Connector
@@ -104,9 +144,6 @@ data Listener (p :: [Type]) (s :: Type) (i :: Type) where
     -> Listener p s ib
     -> Listener p s (ia, ib)
 
-
-data IndexSend = SendIdle | SendWork
-data IndexListen = ListenIdle | ListenWork
 
 
 -- $exposed

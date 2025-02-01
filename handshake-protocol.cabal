@@ -93,6 +93,7 @@ library
   exposed-modules:
     Protocol.Connector,
     Protocol.Channel,
+    Protocol.State,
     Protocol.Internal.Util
   other-modules:
     -- Protocol.Internal.Util
