@@ -26,7 +26,19 @@ module Protocol.Connector where
   ) where
 -}
 
-import Clash.Prelude ((.), ($), const, maybe, Type, Symbol, Maybe(..), Either(..), Eq(..), NFDataX, Generic)
+import Clash.Prelude
+  ( (.)
+  , ($)
+  , const
+  , maybe
+  , Type
+  , Symbol
+  , Maybe(..)
+  , Either(..)
+  , Eq(..)
+  , NFDataX
+  , Generic
+  )
 import qualified Clash.Prelude as CP
 
 import Protocol.Internal.Util
@@ -37,12 +49,6 @@ import Control.Lens
 import Data.Monoid
 import Data.Proxy
 
-
--- | Existential wrapper for `Connector`.
-data WrapConnector p s a
-  =  forall i
-  .  StateIndex i
-  => WrapConnector (Connector p s i a)
 
 -- | State index.
 class (NFDataX i, Eq i) => StateIndex i where
