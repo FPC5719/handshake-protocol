@@ -33,6 +33,7 @@ import Clash.Prelude
   , maybe
   , Type
   , Symbol
+  , Bool(..)
   , Maybe(..)
   , Either(..)
   , Eq(..)
@@ -51,37 +52,163 @@ import Data.Proxy
 
 
 -- | State index.
-class (NFDataX i, Eq i) => StateIndex i where
-  idxInit :: i
-  idxDone :: i
+class (NFDataX i, Eq i, CP.Default (Outside i)) => StateIndex i where
+  -- | Outside input.
+  type Outside i
 
-instance StateIndex () where
-  idxInit = ()
-  idxDone = ()
+  -- | Initial state.
+  idxInit :: Outside i -> i
 
-instance (StateIndex a, StateIndex b) => StateIndex (Either a b) where
-  idxInit = Left idxInit
-  idxDone = Right idxDone
+  -- | `Just x` when there is a next state.
+  -- `Nothing` for the last one.
+  idxNext :: Outside i -> i -> Maybe i
 
-instance (StateIndex a, StateIndex b) => StateIndex (a, b) where
-  idxInit = (idxInit, idxInit)
-  idxDone = (idxDone, idxDone)
+data IndexUnit = IndexUnit
+  deriving (Generic, Eq, NFDataX)
+
+instance StateIndex IndexUnit where
+  type Outside IndexUnit = ()
+
+  idxInit () = IndexUnit
+
+  idxNext () IndexUnit = Nothing
+
+data IndexBind a b
+  = BindA a
+  | BindB b
+  deriving (Generic, Eq, NFDataX)
+
+instance (StateIndex a, StateIndex b) =>
+  StateIndex (IndexBind a b) where
+  type Outside (IndexBind a b) = (Outside a, Outside b)
+  
+  idxInit (oa, _) = BindA $ idxInit oa
+
+  idxNext (oa, ob) = \case
+    BindA idxa -> case idxNext oa idxa of
+      Nothing -> Just . BindB $ idxInit ob
+      Just idxa' -> Just . BindA $ idxa'
+    BindB idxb -> case idxNext ob idxb of
+      Nothing -> Nothing
+      Just idxb' -> Just . BindB $ idxb'
+
+data OutsideChoice a b
+  = ChoiceLeft a
+  | ChoiceRight b
+  deriving (Generic, Eq, NFDataX)
+instance CP.Default a => CP.Default (OutsideChoice a b) where
+  def = ChoiceLeft CP.def
+
+data IndexCond a b
+  = CondA a
+  | CondB b
+  deriving (Generic, Eq, NFDataX)
+
+instance (StateIndex a, StateIndex b) =>
+  StateIndex (IndexCond a b) where
+  type Outside (IndexCond a b) = OutsideChoice (Outside a) (Outside b)
+  
+  idxInit = \case
+    ChoiceLeft oa -> CondA $ idxInit oa
+    ChoiceRight ob -> CondB $ idxInit ob
+
+  idxNext o idx = case (o, idx) of
+    (ChoiceLeft oa, CondA idxa) -> case idxNext oa idxa of
+      Nothing -> Nothing
+      Just idxa' -> Just (CondA idxa')
+    (ChoiceRight ob, CondB idxb) -> case idxNext ob idxb of
+      Nothing -> Nothing
+      Just idxb' -> Just (CondB idxb')
+    _ -> Just idx
+
+data IndexParallel a b
+  = ParallelBoth a b
+  | ParallelA a
+  | ParallelB b
+  deriving (Generic, Eq, NFDataX)
+
+instance (StateIndex a, StateIndex b) =>
+  StateIndex (IndexParallel a b) where
+  type Outside (IndexParallel a b) = (Outside a, Outside b)
+
+  idxInit (oa, ob) = ParallelBoth (idxInit oa) (idxInit ob)
+
+  idxNext (oa, ob) =
+    let idxStep = \case
+          (Nothing, Nothing) -> Nothing
+          (Nothing, Just idxb') -> Just $ ParallelB idxb'
+          (Just idxa', Nothing) -> Just $ ParallelA idxa'
+          (Just idxa', Just idxb') -> Just $ ParallelBoth idxa' idxb'    
+    in \case
+      ParallelBoth idxa idxb -> idxStep (idxNext oa idxa, idxNext ob idxb)
+      ParallelA idxa -> idxStep (idxNext oa idxa, Nothing)
+      ParallelB idxb -> idxStep (Nothing, idxNext ob idxb)
+
+data IndexLoop i = IndexLoop i
+  deriving (Generic, Eq, NFDataX)
+
+instance StateIndex i => StateIndex (IndexLoop i) where
+  type Outside (IndexLoop i) = Outside i
+
+  idxInit o = IndexLoop $ idxInit o
+
+  idxNext o (IndexLoop idx) = case idxNext o idx of
+    Just idx' -> Just (IndexLoop idx')
+    Nothing -> Just . IndexLoop $ idxInit o
 
 
-data IndexSend = SendIdle | SendWork | SendDone
+data OutsideStatus
+  = Block
+  | NonBlock
+  deriving (Generic, Eq, NFDataX)
+instance CP.Default OutsideStatus where
+  def = Block
+
+data IndexSend = SendIdle | SendWork
   deriving (Generic, Eq, NFDataX)
 
 instance StateIndex IndexSend where
-  idxInit = SendIdle
-  idxDone = SendDone
+  type Outside IndexSend = OutsideStatus
 
-data IndexListen = ListenIdle | ListenWork | ListenDone
+  idxInit _ = SendIdle
+
+  idxNext o = \case
+    SendIdle -> case o of
+      Block -> Just SendIdle
+      NonBlock -> Just SendWork
+    SendWork -> case o of
+      Block -> Just SendWork
+      NonBlock -> Nothing
+
+data IndexListen = ListenIdle | ListenWork
   deriving (Generic, Eq, NFDataX)
 
 instance StateIndex IndexListen where
-  idxInit = ListenIdle
-  idxDone = ListenDone
+  type Outside IndexListen = OutsideStatus
 
+  idxInit _ = ListenIdle
+
+  idxNext o = \case
+    ListenIdle -> case o of
+      Block -> Just ListenIdle
+      NonBlock -> Just ListenWork
+    ListenWork -> case o of
+      Block -> Just ListenWork
+      NonBlock -> Nothing
+
+data IndexRace a b = IndexRace a b
+  deriving (Generic, Eq, NFDataX)
+
+instance (StateIndex a, StateIndex b) =>
+  StateIndex (IndexRace a b) where
+  type Outside (IndexRace a b) = (Outside a, Outside b)
+
+  idxInit (oa, ob) = IndexRace (idxInit oa) (idxInit ob)
+
+  idxNext (oa, ob) (IndexRace idxa idxb) =
+    case (idxNext oa idxa, idxNext ob idxb) of
+      (Just idxa', Just idxb') -> Just $ IndexRace idxa' idxb'
+      _ -> Nothing
 
 -- | The `Connector`.
 data Connector
@@ -91,21 +218,31 @@ data Connector
   (a :: Type)   -- ^ Result type.
   where
   -- | Pure action.
-  --
-  -- The state index space is arbitrary.
-  Pure :: a -> Connector p s i a
+  Pure
+    :: a
+    -> Connector p s IndexUnit a
 
   -- | Binding two actions, blocking the latter until the former finishes.
   --
   -- The result state index space is the sum of the two actions' state
   -- index space.
   Bind
-    :: Connector p s ia a
+    :: ( StateIndex ia
+       , StateIndex ib
+       )
+    => Connector p s ia a
     -> (a -> Connector p s ib b)
-    -> Connector p s (Either ia ib) b
+    -> Connector p s (IndexBind ia ib) b
 
-  -- | Perform an action forever
-  Infloop :: Connector p s i () -> Connector p s i ()
+  -- | Conditional branch. At most one branch would be performed at a time.
+  Cond
+    :: ( StateIndex ia
+       , StateIndex ib
+       )
+    => Bool
+    -> Connector p s ia r
+    -> Connector p s ib r
+    -> Connector p s (IndexCond ia ib) r
 
   -- | Perform two actions in parallel, blocking subsequent actions
   -- until both actions finish.
@@ -115,13 +252,24 @@ data Connector
   --
   -- @Note@: The behavior is different from `liftA2`.
   LiftP2
-    :: (a -> b -> c)
+    :: ( StateIndex ia
+       , StateIndex ib
+       )
+    => (a -> b -> c)
     -> Connector p s ia a
     -> Connector p s ib b
-    -> Connector p s (ia, ib) c
+    -> Connector p s (IndexParallel ia ib) c
+
+  -- | Perform an action forever
+  Infloop
+    :: StateIndex i
+    => Connector p s i ()
+    -> Connector p s (IndexLoop i) ()
 
   -- | Modify the inner register state.
-  RegState :: (s -> (a, s)) -> Connector p s () a
+  RegState
+    :: (s -> (a, s))
+    -> Connector p s IndexUnit a
   
   -- | Send a value with type `t`, to port `pt`, channel `ch`.
   Send
@@ -133,7 +281,8 @@ data Connector
 
   -- | Listen to multiple channels.
   Listen
-    :: Listener p s i
+    :: StateIndex i
+    => Listener p s i
     -> Connector p s i ()
 
 
@@ -146,9 +295,12 @@ data Listener (p :: [Type]) (s :: Type) (i :: Type) where
     -> (Maybe t -> (s -> s))
     -> Listener p s IndexListen
   Listen2
-    :: Listener p s ia
+    :: ( StateIndex ia
+       , StateIndex ib
+       )
+    => Listener p s ia
     -> Listener p s ib
-    -> Listener p s (ia, ib)
+    -> Listener p s (IndexRace ia ib)
 
 
 
@@ -167,40 +319,40 @@ data Listener (p :: [Type]) (s :: Type) (i :: Type) where
 
 
 (>>=)
-  :: Connector p s ia a
+  :: ( StateIndex ia
+     , StateIndex ib
+     )
+  => Connector p s ia a
   -> (a -> Connector p s ib b)
-  -> Connector p s (Either ia ib) b
+  -> Connector p s (IndexBind ia ib) b
 (>>=) = Bind
 
 (>>)
-  :: Connector p s ia a
+  :: ( StateIndex ia
+     , StateIndex ib
+     )
+  => Connector p s ia a
   -> Connector p s ib b
-  -> Connector p s (Either ia ib) b
+  -> Connector p s (IndexBind ia ib) b
 (>>) x y = Bind x (const y)
 
--- | `pure` has default flexible state index space,
--- which allows it to be used in padding a shorter branch.
-pure :: a -> Connector p s i a
+
+pure :: a -> Connector p s IndexUnit a
 pure = Pure
 
--- | `pure1` has more strict type.
-pure1 :: a -> Connector p s () a
-pure1 = Pure
-
-
-state :: (s -> (a, s)) -> Connector p s () a
+state :: (s -> (a, s)) -> Connector p s IndexUnit a
 state = RegState
 
-get :: Connector p s () s
+get :: Connector p s IndexUnit s
 get = RegState (\x -> (x, x))
 
-gets :: (s -> a) -> Connector p s () a
+gets :: (s -> a) -> Connector p s IndexUnit a
 gets f = RegState (\x -> (f x, x))
 
-set :: s -> Connector p s () ()
+set :: s -> Connector p s IndexUnit ()
 set x = RegState (\_ -> ((), x))
 
-modify :: (s -> s) -> Connector p s () ()
+modify :: (s -> s) -> Connector p s IndexUnit ()
 modify f = RegState (\x -> ((), f x))
 
 
@@ -269,7 +421,7 @@ listen2
   -> Setter' s (f a1) -- ^ Setter 1.
   -> (t2 -> a2)       -- ^ Transform the result from channel 2.
   -> Setter' s (f a2) -- ^ Setter 2.
-  -> Connector p s (IndexListen, IndexListen) ()
+  -> Connector p s (IndexRace IndexListen IndexListen) ()
 listen2 f1 l1 f2 l2 = Listen $ Listen2
   (Listen1 (Proxy @pt1) (Proxy @ch1) (\t -> l1 .~ maybe mempty (CP.pure . f1) t))
   (Listen1 (Proxy @pt2) (Proxy @ch2) (\t -> l2 .~ maybe mempty (CP.pure . f2) t))
@@ -309,7 +461,10 @@ listen4
   -> (t4 -> a4)       -- ^ Transform the result from channel 4.
   -> Setter' s (f a4) -- ^ Setter 4.
   -> Connector p s
-     ((IndexListen, IndexListen), (IndexListen, IndexListen))
+     (IndexRace
+       (IndexRace IndexListen IndexListen)
+       (IndexRace IndexListen IndexListen)
+     )
      ()
 listen4 f1 l1 f2 l2 f3 l3 f4 l4 = Listen $ Listen2
   (Listen2
@@ -321,23 +476,44 @@ listen4 f1 l1 f2 l2 f3 l3 f4 l4 = Listen $ Listen2
     (Listen1 (Proxy @pt4) (Proxy @ch4) (\t -> l4 .~ maybe mempty (CP.pure . f4) t))
   )
 
+-- | Conditional branch.
+cond
+  :: forall
+     {r :: Type}
+     {ia :: Type} {ib :: Type}
+     {p :: [Type]} {s :: Type}
+  .  ( Monoid s
+     , StateIndex ia
+     , StateIndex ib
+     )
+  => Bool
+  -> Connector p s ia r
+  -> Connector p s ib r
+  -> Connector p s (IndexCond ia ib) r
+cond = Cond
+
 -- | Alias for `LiftP2` when the results are discarded.
 parallel
   :: forall
      {a :: Type} {b :: Type}
      {ia :: Type} {ib :: Type}
      {p :: [Type]} {s :: Type}
-  .  Monoid s
+  .  ( Monoid s
+     , StateIndex ia
+     , StateIndex ib
+     )
   => Connector p s ia a -- ^ The result is discarded.
   -> Connector p s ib b -- ^ The result is discarded.
-  -> Connector p s (ia, ib) ()
+  -> Connector p s (IndexParallel ia ib) ()
 parallel = LiftP2 (const (const ())) 
 
 -- | Perform an action infinitely.
 infloop
   :: forall
      {p :: [Type]} {s :: Type} {i :: Type}
-  .  Monoid s
+  .  ( Monoid s
+     , StateIndex i
+     )
   => Connector p s i () -- ^ Action for an iteration.
-  -> Connector p s i ()
+  -> Connector p s (IndexLoop i) ()
 infloop = Infloop

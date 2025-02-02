@@ -45,4 +45,4 @@ simple
   :: HiddenClockResetEnable dom
   => Signal dom (PortIn CounterPort)
   -> Signal dom (PortOut CounterPort)
-simple = mealyWrap (runConnector simple')
+simple = mealyWrap (runConnectorWrap simple')

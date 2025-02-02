@@ -17,7 +17,7 @@ module Protocol.State where
 import Clash.Prelude
 
 import Protocol.Internal.Util
-import Protocol.Connector
+import qualified Protocol.Connector as C
 import Protocol.Channel
 
 import Control.Monad.State.Strict
@@ -27,29 +27,37 @@ import Data.Proxy
 -- | Existential wrapper for `Connector`.
 data WrapConnector p s a
   =  forall i
-  .  StateIndex i
-  => WrapConnector (Connector p s i a)
+  .  C.StateIndex i
+  => WrapConnector (C.Connector p s i a)
 
 -- | Existential wrapper for `State`.
 data WrapState p s a
   =  forall i
-  .  StateIndex i
+  .  C.StateIndex i
   => WrapState (PortIn p -> State (i, s) (a, PortOut p))
 
 -- TODO
 runConnector
+  :: C.StateIndex i
+  => C.Connector p s i a
+  -> (PortIn p -> State (i, s) (a, PortOut p))
+runConnector = \case
+  C.Pure x -> undefined
+  C.Bind x f -> undefined
+  C.Cond b pa pb -> undefined
+  C.LiftP2 f pa pb -> undefined
+  C.Infloop x -> undefined
+  C.RegState f -> undefined
+  C.Send (Proxy :: Proxy pt) (Proxy :: Proxy ch) f -> undefined
+  C.Listen l -> case l of
+    C.Listen1 (Proxy :: Proxy pt) (Proxy :: Proxy ch) f -> undefined
+    C.Listen2 l1 l2 -> undefined
+
+runConnectorWrap
   :: WrapConnector p s a
   -> WrapState p s a
-runConnector (WrapConnector con) = case con of
-  Pure x -> undefined
-  Bind x f -> undefined
-  Infloop x -> undefined
-  LiftP2 f pa pb -> undefined
-  RegState f -> undefined
-  Send (Proxy :: Proxy pt) (Proxy :: Proxy ch) f -> undefined
-  Listen l -> case l of
-    Listen1 (Proxy :: Proxy pt) (Proxy :: Proxy ch) f -> undefined
-    Listen2 l1 l2 -> undefined
+runConnectorWrap (WrapConnector con) =
+  WrapState (runConnector con)
 
 -- | Convert a `State` monad to a Mealy Machine.
 mealyWrap
@@ -60,7 +68,7 @@ mealyWrap
   => WrapState p s ()
   -> (Signal dom (PortIn p) -> Signal dom (PortOut p))
 mealyWrap (WrapState st) =
-  fmap snd . mealyS st (idxInit, mempty)
+  fmap snd . mealyS st (C.idxInit def, mempty)
 
 
 -- $type-level-conversion
