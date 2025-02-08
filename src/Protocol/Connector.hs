@@ -12,19 +12,6 @@ with Handshake-Based data buses.
 -}
 
 module Protocol.Connector where
-{-
-  -- * The Connector Monad
-  ( Connector(..)
-  -- * Exposed Functions
-  -- $exposed
-  , send
-  , listen1
-  , listen2
-  , listen4
-  , parallel
-  , infloop
-  ) where
--}
 
 import Clash.Prelude
   ( (.)
@@ -42,208 +29,59 @@ import Clash.Prelude
   )
 import qualified Clash.Prelude as CP
 
-import Protocol.Internal.Util
-import Protocol.Channel
+-- import Protocol.Internal.Util
+-- import Protocol.Channel
+
+import Protocol.Interface
+import Protocol.Index
 
 import Control.Lens
--- import Control.Monad.State.Class
 import Data.Monoid
+import Data.Void
 import Data.Proxy
 
 
--- | State index.
-class (NFDataX i, Eq i, CP.Default (Outside i)) => StateIndex i where
-  -- | Outside input.
-  type Outside i
-
-  -- | Initial state.
-  idxInit :: Outside i -> i
-
-  -- | `Just x` when there is a next state.
-  -- `Nothing` for the last one.
-  idxNext :: Outside i -> i -> Maybe i
-
-data IndexUnit = IndexUnit
-  deriving (Generic, Eq, NFDataX)
-
-instance StateIndex IndexUnit where
-  type Outside IndexUnit = ()
-
-  idxInit () = IndexUnit
-
-  idxNext () IndexUnit = Nothing
-
-data IndexBind a b
-  = BindA a
-  | BindB b
-  deriving (Generic, Eq, NFDataX)
-
-instance (StateIndex a, StateIndex b) =>
-  StateIndex (IndexBind a b) where
-  type Outside (IndexBind a b) = (Outside a, Outside b)
-  
-  idxInit (oa, _) = BindA $ idxInit oa
-
-  idxNext (oa, ob) = \case
-    BindA idxa -> case idxNext oa idxa of
-      Nothing -> Just . BindB $ idxInit ob
-      Just idxa' -> Just . BindA $ idxa'
-    BindB idxb -> case idxNext ob idxb of
-      Nothing -> Nothing
-      Just idxb' -> Just . BindB $ idxb'
-
-data OutsideChoice a b
-  = ChoiceLeft a
-  | ChoiceRight b
-  deriving (Generic, Eq, NFDataX)
-instance CP.Default a => CP.Default (OutsideChoice a b) where
-  def = ChoiceLeft CP.def
-
-data IndexCond a b
-  = CondA a
-  | CondB b
-  deriving (Generic, Eq, NFDataX)
-
-instance (StateIndex a, StateIndex b) =>
-  StateIndex (IndexCond a b) where
-  type Outside (IndexCond a b) = OutsideChoice (Outside a) (Outside b)
-  
-  idxInit = \case
-    ChoiceLeft oa -> CondA $ idxInit oa
-    ChoiceRight ob -> CondB $ idxInit ob
-
-  idxNext o idx = case (o, idx) of
-    (ChoiceLeft oa, CondA idxa) -> case idxNext oa idxa of
-      Nothing -> Nothing
-      Just idxa' -> Just (CondA idxa')
-    (ChoiceRight ob, CondB idxb) -> case idxNext ob idxb of
-      Nothing -> Nothing
-      Just idxb' -> Just (CondB idxb')
-    _ -> Just idx
-
-data IndexParallel a b
-  = ParallelBoth a b
-  | ParallelA a
-  | ParallelB b
-  deriving (Generic, Eq, NFDataX)
-
-instance (StateIndex a, StateIndex b) =>
-  StateIndex (IndexParallel a b) where
-  type Outside (IndexParallel a b) = (Outside a, Outside b)
-
-  idxInit (oa, ob) = ParallelBoth (idxInit oa) (idxInit ob)
-
-  idxNext (oa, ob) =
-    let idxStep = \case
-          (Nothing, Nothing) -> Nothing
-          (Nothing, Just idxb') -> Just $ ParallelB idxb'
-          (Just idxa', Nothing) -> Just $ ParallelA idxa'
-          (Just idxa', Just idxb') -> Just $ ParallelBoth idxa' idxb'    
-    in \case
-      ParallelBoth idxa idxb -> idxStep (idxNext oa idxa, idxNext ob idxb)
-      ParallelA idxa -> idxStep (idxNext oa idxa, Nothing)
-      ParallelB idxb -> idxStep (Nothing, idxNext ob idxb)
-
-data IndexLoop i = IndexLoop i
-  deriving (Generic, Eq, NFDataX)
-
-instance StateIndex i => StateIndex (IndexLoop i) where
-  type Outside (IndexLoop i) = Outside i
-
-  idxInit o = IndexLoop $ idxInit o
-
-  idxNext o (IndexLoop idx) = case idxNext o idx of
-    Just idx' -> Just (IndexLoop idx')
-    Nothing -> Just . IndexLoop $ idxInit o
-
-
-data OutsideStatus
-  = Block
-  | NonBlock
-  deriving (Generic, Eq, NFDataX)
-instance CP.Default OutsideStatus where
-  def = Block
-
-data IndexSend = SendIdle | SendWork
-  deriving (Generic, Eq, NFDataX)
-
-instance StateIndex IndexSend where
-  type Outside IndexSend = OutsideStatus
-
-  idxInit _ = SendIdle
-
-  idxNext o = \case
-    SendIdle -> case o of
-      Block -> Just SendIdle
-      NonBlock -> Just SendWork
-    SendWork -> case o of
-      Block -> Just SendWork
-      NonBlock -> Nothing
-
-data IndexListen = ListenIdle | ListenWork
-  deriving (Generic, Eq, NFDataX)
-
-instance StateIndex IndexListen where
-  type Outside IndexListen = OutsideStatus
-
-  idxInit _ = ListenIdle
-
-  idxNext o = \case
-    ListenIdle -> case o of
-      Block -> Just ListenIdle
-      NonBlock -> Just ListenWork
-    ListenWork -> case o of
-      Block -> Just ListenWork
-      NonBlock -> Nothing
-
-data IndexRace a b = IndexRace a b
-  deriving (Generic, Eq, NFDataX)
-
-instance (StateIndex a, StateIndex b) =>
-  StateIndex (IndexRace a b) where
-  type Outside (IndexRace a b) = (Outside a, Outside b)
-
-  idxInit (oa, ob) = IndexRace (idxInit oa) (idxInit ob)
-
-  idxNext (oa, ob) (IndexRace idxa idxb) =
-    case (idxNext oa idxa, idxNext ob idxb) of
-      (Just idxa', Just idxb') -> Just $ IndexRace idxa' idxb'
-      _ -> Nothing
-
 -- | The `Connector`.
 data Connector
-  (p :: [Type]) -- ^ Ports and channels.
+  (p :: [ISym]) -- ^ Ports and channels.
   (s :: Type)   -- ^ Inner state.
   (i :: Type)   -- ^ Outer state index space.
   (a :: Type)   -- ^ Result type.
   where
-  -- | Pure action.
   Pure
     :: a
-    -> Connector p s IndexUnit a
-
+    -> Connector p s (IMaybe I0 Void) a
+  {-
+  Ask
+    :: Getter (HList (FInput p)) a
+    -> Connector p s I0 a
+  Tell
+    :: Setter' (HList (FOutput p)) a
+    -> Connector p s I0 a
+  Get
+    :: Getter s a
+    -> Connector p s I0 a
+  Put
+    :: Setter' s a
+    -> Connector p s I1 a
+  -}
   -- | Binding two actions, blocking the latter until the former finishes.
   --
   -- The result state index space is the sum of the two actions' state
   -- index space.
   Bind
-    :: ( StateIndex ia
-       , StateIndex ib
-       )
-    => Connector p s ia a
-    -> (a -> Connector p s ib b)
-    -> Connector p s (IndexBind ia ib) b
+    :: Connector p s (IMaybe ima ia) a
+    -> (a -> Connector p s (IMaybe imb ib) b)
+    -> Connector p s (IBind (IMaybe ima ia) (IMaybe imb ib)) b
 
+  
   -- | Conditional branch. At most one branch would be performed at a time.
   Cond
-    :: ( StateIndex ia
-       , StateIndex ib
-       )
-    => Bool
-    -> Connector p s ia r
-    -> Connector p s ib r
-    -> Connector p s (IndexCond ia ib) r
-
+    :: Bool
+    -> Connector p s (IMaybe I1 ia) r
+    -> Connector p s (IMaybe I1 ib) r
+    -> Connector p s (ICond (IMaybe I1 ia) (IMaybe I1 ib)) r
+  {-
   -- | Perform two actions in parallel, blocking subsequent actions
   -- until both actions finish.
   --
@@ -260,17 +98,24 @@ data Connector
     -> Connector p s ib b
     -> Connector p s (IndexParallel ia ib) c
 
-  -- | Perform an action forever
-  Infloop
-    :: StateIndex i
-    => Connector p s i ()
-    -> Connector p s (IndexLoop i) ()
-
+  Race
+    :: ( StateIndex ia
+       , StateIndex ib
+       )
+    => Connector p s ia ()
+    -> Connector p s ib ()
+    -> Connector p s (IndexRace ia ib) ()
+  -}
+  Until
+    :: Connector p s (IMaybe I1 ia) (Maybe a)
+    -> Connector p s (ILoop (IMaybe I1 ia)) a
+  {-
   -- | Modify the inner register state.
   RegState
     :: (s -> (a, s))
     -> Connector p s IndexUnit a
-  
+  -}
+  {-
   -- | Send a value with type `t`, to port `pt`, channel `ch`.
   Send
     :: Elem2 pt ch p (Channel t)
@@ -284,8 +129,8 @@ data Connector
     :: StateIndex i
     => Listener p s i
     -> Connector p s i ()
-
-
+  -}
+{-
 -- | Helper datatype for specifying channels to listen
 data Listener (p :: [Type]) (s :: Type) (i :: Type) where
   Listen1
@@ -301,7 +146,7 @@ data Listener (p :: [Type]) (s :: Type) (i :: Type) where
     => Listener p s ia
     -> Listener p s ib
     -> Listener p s (IndexRace ia ib)
-
+-}
 
 
 -- $exposed
@@ -317,7 +162,7 @@ data Listener (p :: [Type]) (s :: Type) (i :: Type) where
 -- `Semigroup` and `Monoid` instances can be derived, and
 -- the `Lens`es can be meanwhile built automatically.
 
-
+{-
 (>>=)
   :: ( StateIndex ia
      , StateIndex ib
@@ -337,9 +182,10 @@ data Listener (p :: [Type]) (s :: Type) (i :: Type) where
 (>>) x y = Bind x (const y)
 
 
-pure :: a -> Connector p s IndexUnit a
+pure :: a -> Connector p s IndexZero a
 pure = Pure
-
+-}
+{-
 state :: (s -> (a, s)) -> Connector p s IndexUnit a
 state = RegState
 
@@ -354,8 +200,8 @@ set x = RegState (\_ -> ((), x))
 
 modify :: (s -> s) -> Connector p s IndexUnit ()
 modify f = RegState (\x -> ((), f x))
-
-
+-}
+{-
 -- | Send a value to a channel.
 --
 -- Sending to multiple channels can be expressed by
@@ -517,3 +363,4 @@ infloop
   => Connector p s i () -- ^ Action for an iteration.
   -> Connector p s (IndexLoop i) ()
 infloop = Infloop
+-}

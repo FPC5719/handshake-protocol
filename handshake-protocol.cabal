@@ -91,10 +91,13 @@ library
   import: common-options
   hs-source-dirs: src
   exposed-modules:
-    Protocol.Connector,
-    Protocol.Channel,
-    Protocol.State,
-    Protocol.Internal.Util
+    Protocol.FSM
+    -- Protocol.Connector,
+    -- Protocol.Channel,
+    -- Protocol.State,
+    -- Protocol.Index,
+    -- Protocol.Interface,
+    -- Protocol.Internal.Util
   other-modules:
     -- Protocol.Internal.Util
   default-language: Haskell2010
@@ -132,7 +135,7 @@ test-suite test-library
   ghc-options: -threaded
   main-is: unittests.hs
   other-modules:
-    Tests.Simple
+    -- Tests.Simple
     -- Tests.Arbiter
   build-depends:
     handshake-protocol,

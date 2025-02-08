@@ -16,9 +16,11 @@ module Protocol.State where
 
 import Clash.Prelude
 
-import Protocol.Internal.Util
+-- import Protocol.Internal.Util
 import qualified Protocol.Connector as C
-import Protocol.Channel
+import Protocol.Index
+import Protocol.Interface
+-- import Protocol.Channel
 
 import Control.Monad.State.Strict
 import Data.Proxy
@@ -27,32 +29,29 @@ import Data.Proxy
 -- | Existential wrapper for `Connector`.
 data WrapConnector p s a
   =  forall i
-  .  C.StateIndex i
-  => WrapConnector (C.Connector p s i a)
+  .  WrapConnector (C.Connector p s i a)
 
 -- | Existential wrapper for `State`.
 data WrapState p s a
   =  forall i
-  .  C.StateIndex i
-  => WrapState (PortIn p -> State (i, s) (a, PortOut p))
+  .  WrapState (HList (FInput p) -> State (i, s) (a, HList (FOutput p)))
 
 -- TODO
 runConnector
-  :: C.StateIndex i
+  :: ( Monoid (HList (FOutput p))
+     )
   => C.Connector p s i a
-  -> (PortIn p -> State (i, s) (a, PortOut p))
+  -> (HList (FInput p) -> State (i, s) (a, HList (FOutput p)))
 runConnector = \case
-  C.Pure x -> undefined
-  C.Bind x f -> undefined
-  C.Cond b pa pb -> undefined
-  C.LiftP2 f pa pb -> undefined
-  C.Infloop x -> undefined
-  C.RegState f -> undefined
-  C.Send (Proxy :: Proxy pt) (Proxy :: Proxy ch) f -> undefined
-  C.Listen l -> case l of
-    C.Listen1 (Proxy :: Proxy pt) (Proxy :: Proxy ch) f -> undefined
-    C.Listen2 l1 l2 -> undefined
+  C.Pure x -> \_ -> pure (x, mempty)
+  C.Bind x f -> \inp ->
+    let ((), (xa, o1)) = runState (runConnector x inp)
+        
+    in
+  C.Cond b x y -> undefined
+  C.Until mx -> undefined
 
+{-
 runConnectorWrap
   :: WrapConnector p s a
   -> WrapState p s a
@@ -66,59 +65,7 @@ mealyWrap
      , Monoid s
      )
   => WrapState p s ()
-  -> (Signal dom (PortIn p) -> Signal dom (PortOut p))
+  -> (Signal dom (HList (FInput p)) -> Signal dom (HList (FOutput p)))
 mealyWrap (WrapState st) =
-  fmap snd . mealyS st (C.idxInit def, mempty)
-
-
--- $type-level-conversion
--- `Channel a` is converted to `Bool -> .. -> Maybe a`, while
--- `CoChannel a` is converted to `Maybe a -> .. -> Bool`.
-
-type PortIn p = HList (GetPortIn2 p)
-
-class HasPortIn ts where
-  type GetPortIn ts :: [Type]
-instance HasPortIn '[] where
-  type GetPortIn '[] = '[]
-instance HasPortIn ts =>
-  HasPortIn ((Channel a `Tagged` s) ': ts) where
-  type GetPortIn ((Channel a `Tagged` s) ': ts) =
-    (Bool `Tagged` s) ': GetPortIn ts
-instance HasPortIn ts =>
-  HasPortIn ((CoChannel a `Tagged` s) ': ts) where
-  type GetPortIn ((CoChannel a `Tagged` s) ': ts) =
-    (Maybe a `Tagged` s) ': GetPortIn ts
-
-class HasPortIn2 tss where
-  type GetPortIn2 tss :: [Type]
-instance HasPortIn2 '[] where
-  type GetPortIn2 '[] = '[]
-instance (HasPortIn2 tss, HasPortIn ts) =>
-  HasPortIn2 ((ts `Tagged2` s) ': tss) where
-  type GetPortIn2 ((ts `Tagged2` s) ': tss) =
-    HList (GetPortIn ts) ': GetPortIn2 tss
-
-type PortOut p = HList (GetPortOut2 p)
-
-class HasPortOut ts where
-  type GetPortOut ts :: [Type]
-instance HasPortOut '[] where
-  type GetPortOut '[] = '[]
-instance HasPortOut ts =>
-  HasPortOut ((Channel a `Tagged` s) ': ts) where
-  type GetPortOut ((Channel a `Tagged` s) ': ts) =
-    (Maybe a `Tagged` s) ': GetPortOut ts
-instance HasPortOut ts =>
-  HasPortOut ((CoChannel a `Tagged` s) ': ts) where
-  type GetPortOut ((CoChannel a `Tagged` s) ': ts) =
-    (Bool `Tagged` s) ': GetPortOut ts
-
-class HasPortOut2 tss where
-  type GetPortOut2 tss :: [Type]
-instance HasPortOut2 '[] where
-  type GetPortOut2 '[] = '[]
-instance (HasPortOut2 tss, HasPortOut ts) =>
-  HasPortOut2 ((ts `Tagged2` s) ': tss) where
-  type GetPortOut2 ((ts `Tagged2` s) ': tss) =
-    HList (GetPortOut ts) ': GetPortOut2 tss
+  fmap snd . mealyS st (def, mempty)
+-}
