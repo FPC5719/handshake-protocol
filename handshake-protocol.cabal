@@ -84,19 +84,20 @@ common common-options
     lens,
     mtl,
     generic-monoid,
-    extra
+    extra,
+    profunctors
 
 
 library
   import: common-options
   hs-source-dirs: src
   exposed-modules:
-    Protocol.FSM
+    Protocol.FSM,
     -- Protocol.Connector,
     -- Protocol.Channel,
     -- Protocol.State,
     -- Protocol.Index,
-    -- Protocol.Interface,
+    Protocol.Interface
     -- Protocol.Internal.Util
   other-modules:
     -- Protocol.Internal.Util
@@ -137,6 +138,7 @@ test-suite test-library
   other-modules:
     -- Tests.Simple
     -- Tests.Arbiter
+    Tests.FSM
   build-depends:
     handshake-protocol,
     QuickCheck,

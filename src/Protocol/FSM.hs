@@ -3,7 +3,7 @@
 module Protocol.FSM where
 
 import Clash.Prelude
-
+import Data.Profunctor
 
 class Initial a where
   initial :: a
@@ -21,6 +21,11 @@ instance Initial a => Initial (Maybe a) where
 data FSM s i o = FSM
   { unFSM :: Maybe i -> s -> (o, Maybe s) }
 
+instance Profunctor (FSM s) where
+  dimap l r (FSM f) = FSM $ \ml s ->
+    let (o, ms) = f (l <$> ml) s
+    in (r o, ms)
+
 type IsFSM s i o = (Initial s, NFDataX s, Monoid o)
 
 fsm
@@ -31,10 +36,16 @@ fsm f = FSM $ \case
   Nothing -> const (mempty, Nothing)
   Just i  -> f i
 
-idFSM
+modify
+  :: IsFSM s i o
+  => (s -> s)
+  -> FSM s i o
+modify p = fsm $ const (\s -> (mempty, Just (p s)))
+
+skip
   :: IsFSM s i o
   => FSM s i o
-idFSM = fsm $ const (\s -> (mempty, Just s))
+skip = modify id
 
 (&>)
   :: (IsFSM s i o, IsFSM t i o)
@@ -86,7 +97,24 @@ cond
   -> FSM s i o
   -> FSM (Maybe s) i o
 cond p (FSM f) = fsm $ \i ms ->
-  let (fo, fso) = uncurry f (maybe (if p i then Just i else Nothing, initial) (Just i,) ms)
+  let (fo, fso) = uncurry f $ case ms of
+        Nothing -> if p i
+          then (Just i , initial)
+          else (Nothing, initial)
+        Just s -> (Just i, s)
   in (fo,) $ case fso of
     Nothing -> Nothing
     Just s  -> Just (Just s)
+
+loop
+  :: IsFSM s i o
+  => (o -> Bool)
+  -> FSM s i o
+  -> FSM s i o
+loop p (FSM f) = fsm $ \i s ->
+  let (fo, fso) = f (Just i) s
+  in (fo,) $ case fso of
+    Nothing -> if p fo
+      then Nothing
+      else Just initial
+    st -> st

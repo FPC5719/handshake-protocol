@@ -3,7 +3,7 @@ module Protocol.Interface where
 import Clash.Prelude
 
 import Data.Kind
--- import Data.Proxy
+import Data.Monoid
 import GHC.TypeLits
 
 
@@ -22,7 +22,7 @@ type family FInput (t :: [ISym]) :: [Type] where
 
 type family FOutput (t :: [ISym]) :: [Type] where
   FOutput '[] = '[]
-  FOutput ((s ::~ Output a) ': ts) = a ': FOutput ts
+  FOutput ((s ::~ Output a) ': ts) = (First a) ': FOutput ts
   FOutput ((s ::~ Input a) ': ts) = FOutput ts
   FOutput ((s ::~ Rec rs) ': ts) = HList (FOutput rs) ': FOutput ts
 
