@@ -11,8 +11,11 @@ class Initial a where
 instance (Initial a, Initial b) => Initial (Either a b) where
   initial = Left initial
 
-instance (Initial a, Initial b) => Initial (Maybe a, Maybe b) where
-  initial = (Just initial, Just initial)
+instance (Initial a, Initial b) => Initial (a, b) where
+  initial = (initial, initial)
+
+instance Initial a => Initial (Maybe a) where
+  initial = Just initial
 
 
 data FSM s i o = FSM
@@ -68,3 +71,22 @@ FSM f &! FSM g = fsm $ \i (ms, mt) ->
   in (fo `mappend` go,) $ case (fso, gso) of
     (Just s, Just t) -> Just (Just s, Just t)
     _ -> Nothing
+
+withRes
+  :: (IsFSM s (r, i) (r, o), IsFSM (r, s) i o)
+  => FSM s (r, i) (r, o)
+  -> FSM (r, s) i o
+withRes (FSM f) = fsm $ \i (r, s) ->
+  let ((fro, fo), fso) = f (Just (r, i)) s
+  in (fo, (fro,) <$> fso)
+
+cond
+  :: IsFSM s i o
+  => (i -> Bool)
+  -> FSM s i o
+  -> FSM (Maybe s) i o
+cond p (FSM f) = fsm $ \i ms ->
+  let (fo, fso) = uncurry f (maybe (if p i then Just i else Nothing, initial) (Just i,) ms)
+  in (fo,) $ case fso of
+    Nothing -> Nothing
+    Just s  -> Just (Just s)
