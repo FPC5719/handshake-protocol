@@ -3,10 +3,14 @@
 module Protocol.FSM where
 
 import Clash.Prelude
+import Control.Monad.State.Strict
 import Data.Profunctor
 
 class Initial a where
   initial :: a
+
+instance Initial () where
+  initial = ()
 
 instance (Initial a, Initial b) => Initial (Either a b) where
   initial = Left initial
@@ -17,103 +21,109 @@ instance (Initial a, Initial b) => Initial (a, b) where
 instance Initial a => Initial (Maybe a) where
   initial = Just initial
 
+-- | Finite State Machine
+data FSM
+  r -- ^ User defined state
+  s -- ^ Auto generated state
+  i -- ^ Input
+  o -- ^ Output
+  = FSM
+    { unFSM
+      :: (Maybe i, r, s) -- ^ `Maybe i`: `Nothing` if not executing.
+      -> (o, r, Maybe s) -- ^ `Maybe s`: `Nothing` if terminate.
+    }
 
-data FSM s i o = FSM
-  { unFSM :: Maybe i -> s -> (o, Maybe s) }
+instance Profunctor (FSM r s) where
+  dimap l r (FSM f) = FSM $ \(mi, ri, s) ->
+    let (o, ro, ms) = f ((l <$> mi), ri, s)
+    in (r o, ro, ms)
 
-instance Profunctor (FSM s) where
-  dimap l r (FSM f) = FSM $ \ml s ->
-    let (o, ms) = f (l <$> ml) s
-    in (r o, ms)
+type IsFSM r s i o = (NFDataX r, Monoid r, Initial s, NFDataX s, Monoid o)
 
-type IsFSM s i o = (Initial s, NFDataX s, Monoid o)
-
+-- | Smart constructor handling when `Maybe i` is `Nothing`.
 fsm
-  :: IsFSM s i o
-  => (i -> s -> (o, Maybe s))
-  -> FSM s i o
-fsm f = FSM $ \case
-  Nothing -> const (mempty, Nothing)
-  Just i  -> f i
+  :: IsFSM r s i o
+  => ((i, r, s) -> (o, r, Maybe s))
+  -> FSM r s i o
+fsm f = FSM $ \(mi, r, s) -> case mi of
+  Nothing -> (mempty, r, Nothing)
+  Just i  -> f (i, r, s)
 
-modify
-  :: IsFSM s i o
-  => (s -> s)
-  -> FSM s i o
-modify p = fsm $ const (\s -> (mempty, Just (p s)))
+-- | Embed a state transition into a FSM, taking one cycle to perform.
+embed
+  :: IsFSM r () i o
+  => (i -> r -> (o, r))
+  -> FSM r () i o
+embed f = fsm $ \(i, r, ()) ->
+  let (o, ro) = f i r
+  in (o, ro, Nothing)
 
-skip
-  :: IsFSM s i o
-  => FSM s i o
-skip = modify id
+-- | Embed a `State` Monad.
+embedS
+  :: IsFSM r () i o
+  => (i -> State r o)
+  -> FSM r () i o
+embedS = embed . (runState .)
 
 (&>)
-  :: (IsFSM s i o, IsFSM t i o)
-  => FSM s i o
-  -> FSM t i o
-  -> FSM (Either s t) i o
-FSM f &> FSM g = fsm $ \i est ->
-  let (fo, fso) = uncurry f (either (Just i,) (const (Nothing, initial)) est)
-      (go, gso) = uncurry g (either (const (Nothing, initial)) (Just i,) est)
-  in (fo `mappend` go,) $ case est of
+  :: (IsFSM r s i o, IsFSM r t i o)
+  => FSM r s i o
+  -> FSM r t i o
+  -> FSM r (Either s t) i o
+FSM f &> FSM g = fsm $ \(i, r, est) ->
+  let (fo, fr, fso) = f (either (Just i, r,) (const (Nothing, r, initial)) est)
+      (go, gr, gso) = g (either (const (Nothing, fr, initial)) (Just i, fr,) est)
+  in (fo `mappend` go, gr,) $ case est of
     Left  _ -> maybe (Just . Right $ initial) (Just . Left ) fso
     Right _ -> maybe Nothing                  (Just . Right) gso
 
 (&|)
-  :: (IsFSM s i o, IsFSM t i o)
-  => FSM s i o
-  -> FSM t i o
-  -> FSM (Maybe s, Maybe t) i o
-FSM f &| FSM g = fsm $ \i (ms, mt) ->
-  let (fo, fso) = uncurry f (maybe (Nothing, initial) (Just i,) ms)
-      (go, gso) = uncurry g (maybe (Nothing, initial) (Just i,) mt)
-  in (fo `mappend` go,) $ case (fso, gso) of
+  :: (IsFSM r s i o, IsFSM r t i o)
+  => FSM r s i o
+  -> FSM r t i o
+  -> FSM r (Maybe s, Maybe t) i o
+FSM f &| FSM g = fsm $ \(i, r, (ms, mt)) ->
+  let (fo, fr, fso) = f (maybe (Nothing, r, initial) (Just i, r,) ms)
+      (go, gr, gso) = g (maybe (Nothing, r, initial) (Just i, r,) mt)
+  in (fo `mappend` go, fr `mappend` gr,) $ case (fso, gso) of
     (Nothing, Nothing) -> Nothing
     st -> Just st
 
 (&!)
-  :: (IsFSM s i o, IsFSM t i o)
-  => FSM s i o
-  -> FSM t i o
-  -> FSM (Maybe s, Maybe t) i o
-FSM f &! FSM g = fsm $ \i (ms, mt) ->
-  let (fo, fso) = uncurry f (maybe (Nothing, initial) (Just i,) ms)
-      (go, gso) = uncurry g (maybe (Nothing, initial) (Just i,) mt)
-  in (fo `mappend` go,) $ case (fso, gso) of
+  :: (IsFSM r s i o, IsFSM r t i o)
+  => FSM r s i o
+  -> FSM r t i o
+  -> FSM r (Maybe s, Maybe t) i o
+FSM f &! FSM g = fsm $ \(i, r, (ms, mt)) ->
+  let (fo, fr, fso) = f (maybe (Nothing, r, initial) (Just i, r,) ms)
+      (go, gr, gso) = g (maybe (Nothing, r, initial) (Just i, r,) mt)
+  in (fo `mappend` go, fr `mappend` gr,) $ case (fso, gso) of
     (Just s, Just t) -> Just (Just s, Just t)
     _ -> Nothing
 
-withRes
-  :: (IsFSM s (r, i) (r, o), IsFSM (r, s) i o)
-  => FSM s (r, i) (r, o)
-  -> FSM (r, s) i o
-withRes (FSM f) = fsm $ \i (r, s) ->
-  let ((fro, fo), fso) = f (Just (r, i)) s
-  in (fo, (fro,) <$> fso)
-
 cond
-  :: IsFSM s i o
+  :: IsFSM r s i o
   => (i -> Bool)
-  -> FSM s i o
-  -> FSM (Maybe s) i o
-cond p (FSM f) = fsm $ \i ms ->
-  let (fo, fso) = uncurry f $ case ms of
+  -> FSM r s i o
+  -> FSM r (Maybe s) i o
+cond p (FSM f) = fsm $ \(i, r, ms) ->
+  let (fo, fr, fso) = f $ case ms of
         Nothing -> if p i
-          then (Just i , initial)
-          else (Nothing, initial)
-        Just s -> (Just i, s)
-  in (fo,) $ case fso of
+          then (Just i , r, initial)
+          else (Nothing, r, initial)
+        Just s -> (Just i, r, s)
+  in (fo, fr,) $ case fso of
     Nothing -> Nothing
     Just s  -> Just (Just s)
 
 loop
-  :: IsFSM s i o
+  :: IsFSM r s i o
   => (o -> Bool)
-  -> FSM s i o
-  -> FSM s i o
-loop p (FSM f) = fsm $ \i s ->
-  let (fo, fso) = f (Just i) s
-  in (fo,) $ case fso of
+  -> FSM r s i o
+  -> FSM r s i o
+loop p (FSM f) = fsm $ \(i, r, s) ->
+  let (fo, fr, fso) = f (Just i, r, s)
+  in (fo, fr,) $ case fso of
     Nothing -> if p fo
       then Nothing
       else Just initial

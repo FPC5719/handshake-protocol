@@ -2,6 +2,7 @@ module Protocol.Interface where
 
 import Clash.Prelude
 
+import Control.Lens
 import Data.Kind
 import Data.Monoid
 import GHC.TypeLits
@@ -29,6 +30,8 @@ type family FOutput (t :: [ISym]) :: [Type] where
 data HList (ts :: [Type]) where
   HNil :: HList '[]
   HCons :: t -> HList ts -> HList (t ': ts)
+
+
 
 type Test = 'Rec
   '[ "Addr" ::~ 'Input (Maybe (Unsigned 32)) 
