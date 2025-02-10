@@ -8,6 +8,7 @@ import Protocol.Interface
 import Clash.Prelude
 import Control.Lens
 import Control.Monad.State.Strict
+import Data.HList
 import Data.Maybe
 import Data.Monoid
 import Data.Monoid.Generic
@@ -24,31 +25,33 @@ type MyPorts =
 
 data MyState = MyState
   { _count :: First Value
-  , _stop  :: First Bool }
-  deriving (Generic, Default)
+  , _stop  :: First Bool
+  }
+  deriving (Generic, Default, NFDataX)
   deriving Semigroup via GenericSemigroup MyState
   deriving Monoid via GenericMonoid MyState
 makeLenses 'MyState
 
 myFSM
-  :: FSM
+  :: FSM'
      MyState
-     s
-     (HList (FInput MyPorts))
-     (HList (FOutput MyPorts))
-myFSM =
+     (Record (FInput MyPorts))
+     (Record (FOutput MyPorts))
+myFSM = FSM' $
   loop (const False) $
-  ( cond ((== 42) . (view $ rl @"In")) $
-    ( embed . modify $ count .~ (+ 1) ) &>
+  ( cond ((== 42) . (view $ qx @"In")) $
+    ( embedS $ \_ -> do
+        modify $ count %~ pure . (maybe 0 (+ 1)) . getFirst
+        pure mempty
+    ) &>
     ( loop (fromMaybe False . getFirst . view stop) $
-      embed $ do
-        ready <- view $ rl @"Out" . rl @"Ready"
+      embedS $ \inp -> do
+        let ready = inp ^. qx @"Out" . qx @"Ready"
         cnt <- use count
         if ready
           then pure $ mempty
           else do
           modify $ stop .~ pure True
-          pure $ mempty & (rl @"Out" . rl @"Data") .~ pure cnt
+          pure $ mempty & qx @"Out" . qx @"Data" .~ cnt
     )
   )
-
