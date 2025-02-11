@@ -6,6 +6,7 @@ import Protocol.FSM
 import Protocol.Interface
 
 import Clash.Prelude
+import Clash.Annotations.TH
 import Control.Lens
 import Control.Monad.State.Strict
 import Data.HList
@@ -25,7 +26,6 @@ type MyPorts =
 
 data MyState = MyState
   { _count :: First Value
-  , _stop  :: First Bool
   }
   deriving (Generic, Default, NFDataX)
   deriving Semigroup via GenericSemigroup MyState
@@ -44,14 +44,33 @@ myFSM = FSM' $
         modify $ count %~ pure . (maybe 0 (+ 1)) . getFirst
         pure mempty
     ) &>
-    ( loop (fromMaybe False . getFirst . view stop) $
+    ( rmap snd . loop (isJust . getFirst . fst) $
       embedS $ \inp -> do
-        let ready = inp ^. qx @"Out" . qx @"Ready"
         cnt <- use count
-        if ready
-          then pure $ mempty
-          else do
-          modify $ stop .~ pure True
-          pure $ mempty & qx @"Out" . qx @"Data" .~ cnt
+        pure $ if inp ^. qx @"Out" . qx @"Ready"
+          then (mempty , mempty)
+          else (pure (), mempty & qx @"Out" . qx @"Data" .~ cnt)
     )
   )
+
+myTop'
+  :: HiddenClockResetEnable dom
+  => Signal dom (Record (FInput MyPorts))
+  -> Signal dom (Record (FOutput MyPorts))
+myTop' = case myFSM of
+  FSM' (FSM f) -> flip mealy (mempty, initial) $
+    \(r, s) inp ->
+      let (o, r', ms) = f (Just inp, r, s)
+      in ((r', fromMaybe initial ms), o)
+
+myTop
+  :: ( Tuplifiable (FInput MyPorts) tin
+     , Tuplifiable (FOutput MyPorts) tout
+     )
+  => "clk" ::: Clock System
+  -> "rst" ::: Reset System
+  -> "en" ::: Enable System
+  -> "input" ::: Signal System tin
+  -> "output" ::: Signal System tout
+myTop clk rst en = withClockResetEnable clk rst en (tumapF myTop')
+makeTopEntity 'myTop

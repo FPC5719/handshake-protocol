@@ -40,7 +40,7 @@ instance Profunctor (FSM r s) where
 
 type IsFSM r s i o = (NFDataX r, Monoid r, Initial s, NFDataX s, Monoid o)
 
-data FSM' r i o = forall s . FSM' (FSM r s i o)
+data FSM' r i o = forall s . IsFSM r s i o => FSM' (FSM r s i o)
 
 -- | Smart constructor handling when `Maybe i` is `Nothing`.
 fsm
@@ -120,13 +120,13 @@ cond p (FSM f) = fsm $ \(i, r, ms) ->
 
 loop
   :: IsFSM r s i o
-  => (r -> Bool)
+  => (o -> Bool)
   -> FSM r s i o
   -> FSM r s i o
 loop p (FSM f) = fsm $ \(i, r, s) ->
   let (fo, fr, fso) = f (Just i, r, s)
   in (fo, fr,) $ case fso of
-    Nothing -> if p fr
+    Nothing -> if p fo
       then Nothing
       else Just initial
     st -> st

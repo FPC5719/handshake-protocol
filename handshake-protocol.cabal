@@ -21,6 +21,7 @@ common common-options
     DeriveTraversable
     DerivingStrategies
     FlexibleContexts
+    FlexibleInstances
     GADTs
     InstanceSigs
     KindSignatures
