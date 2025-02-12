@@ -30,44 +30,63 @@ type family FOutput (t :: [ISym]) :: [Type] where
   FOutput ((s ::~ Input a) ': ts) = FOutput ts
   FOutput ((s ::~ Rec rs) ': ts) = Tagged s (Record (FOutput rs)) ': FOutput ts
 
-class Tuplifiable r t where
-  tuplify :: Record r -> t
-  untuplify :: t -> Record r
+type family Tuplify a where
+  Tuplify (Record '[]) = ()
+  Tuplify (Record (Tagged s a ': rs)) =
+    (Tuplify a, Tuplify (Record rs))
+  Tuplify a = a
 
-instance Tuplifiable '[] () where
+class Tuplifiable a where
+  tuplify :: a -> Tuplify a
+  untuplify :: Tuplify a -> a
+
+instance Tuplifiable (Record '[]) where
   tuplify (Record HNil) = ()
   untuplify () = Record HNil
 
-instance (Tuplifiable r t, Tuplifiable rs ts) =>
-  Tuplifiable (Tagged s (Record r) ': rs) (t, ts) where
-  tuplify (Record (HCons (Tagged r) rs))
-    = (tuplify r, tuplify (Record rs))
+instance (Tuplifiable a, Tuplifiable (Record rs)) =>
+  Tuplifiable (Record (Tagged s a ': rs)) where
+  tuplify (Record (HCons (Tagged a) rs))
+    = (tuplify a, tuplify (Record rs))
   untuplify (t, ts) =
     let Record rts = untuplify ts
     in Record (HCons (Tagged (untuplify t)) rts)
 
-instance (Tuplifiable rs ts) =>
-  Tuplifiable (Tagged s a ': rs) (a, ts) where
-  tuplify (Record (HCons (Tagged a) rs)) = (a, tuplify (Record rs))
-  untuplify (t, ts) =
-    let Record rts = untuplify ts
-    in Record (HCons (Tagged t) rts)
+instance Tuplifiable () where
+  tuplify = id
+  untuplify = id
+
+instance Tuplifiable Bool where
+  tuplify = id
+  untuplify = id
+
+instance Tuplifiable (Unsigned n) where
+  tuplify = id
+  untuplify = id
+
+instance Tuplifiable (Signed n) where
+  tuplify = id
+  untuplify = id
+
+instance Functor f => Tuplifiable (f a) where
+  tuplify = id
+  untuplify = id
 
 tumap
-  :: ( Tuplifiable r1 t1
-     , Tuplifiable r2 t2
+  :: ( Tuplifiable r1
+     , Tuplifiable r2
      )
-  => (Record r1 -> Record r2)
-  -> (t1 -> t2)
+  => (r1 -> r2)
+  -> (Tuplify r1 -> Tuplify r2)
 tumap fn = tuplify . fn . untuplify
 
 tumapF
-  :: ( Tuplifiable r1 t1
-     , Tuplifiable r2 t2
+  :: ( Tuplifiable r1
+     , Tuplifiable r2
      , Functor f
      )
-  => (f (Record r1) -> f (Record r2))
-  -> (f t1 -> f t2)
+  => (f r1 -> f r2)
+  -> (f (Tuplify r1) -> f (Tuplify r2))
 tumapF fn = (tuplify <$>) . fn . (untuplify <$>)
 
 qx

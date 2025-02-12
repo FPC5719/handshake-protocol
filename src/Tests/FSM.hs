@@ -24,6 +24,9 @@ type MyPorts =
       ]
    ]
 
+type MyInput  = Record (FInput  MyPorts)
+type MyOutput = Record (FOutput MyPorts)
+
 data MyState = MyState
   { _count :: First Value
   }
@@ -32,11 +35,7 @@ data MyState = MyState
   deriving Monoid via GenericMonoid MyState
 makeLenses 'MyState
 
-myFSM
-  :: FSM'
-     MyState
-     (Record (FInput MyPorts))
-     (Record (FOutput MyPorts))
+myFSM :: FSM' MyState MyInput MyOutput
 myFSM = FSM' $
   loop (const False) $
   ( cond ((== 42) . (view $ qx @"In")) $
@@ -53,24 +52,24 @@ myFSM = FSM' $
     )
   )
 
+type TuInput = (Unsigned 8, ((Bool, ()), ()))
+type TuOutput = ((First (Unsigned 8), ()), ())
+
 myTop'
   :: HiddenClockResetEnable dom
-  => Signal dom (Record (FInput MyPorts))
-  -> Signal dom (Record (FOutput MyPorts))
-myTop' = case myFSM of
+  => Signal dom TuInput
+  -> Signal dom TuOutput
+myTop' = tumapF $ case myFSM of
   FSM' (FSM f) -> flip mealy (mempty, initial) $
     \(r, s) inp ->
       let (o, r', ms) = f (Just inp, r, s)
       in ((r', fromMaybe initial ms), o)
 
-myTop
-  :: ( Tuplifiable (FInput MyPorts) tin
-     , Tuplifiable (FOutput MyPorts) tout
-     )
-  => "clk" ::: Clock System
-  -> "rst" ::: Reset System
-  -> "en" ::: Enable System
-  -> "input" ::: Signal System tin
-  -> "output" ::: Signal System tout
-myTop clk rst en = withClockResetEnable clk rst en (tumapF myTop')
-makeTopEntity 'myTop
+topEntity
+  :: Clock System
+  -> Reset System
+  -> Enable System
+  -> Signal System TuInput
+  -> Signal System TuOutput
+topEntity clk rst en =
+  withClockResetEnable clk rst en myTop'

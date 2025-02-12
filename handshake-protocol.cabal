@@ -96,7 +96,8 @@ library
   hs-source-dirs: src
   exposed-modules:
     Protocol.FSM,
-    Protocol.Interface
+    Protocol.Interface,
+    Tests.FSM
   other-modules:
   default-language: Haskell2010
 
@@ -133,7 +134,7 @@ test-suite test-library
   ghc-options: -threaded
   main-is: unittests.hs
   other-modules:
-    Tests.FSM
+    -- Tests.FSM
   build-depends:
     handshake-protocol,
     QuickCheck,
