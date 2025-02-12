@@ -15,7 +15,7 @@ import Data.Monoid
 import Data.Monoid.Generic
 
 type Value = Unsigned 8
-
+{-
 type MyPorts =
   '[ "In"  ::~ Input Value
    , "Out" ::~ 'Rec
@@ -23,9 +23,20 @@ type MyPorts =
       , "Ready" ::~ Input Bool
       ]
    ]
+-}
+data MyInput = MyInput
+  { _myIn :: Unsigned 8
+  , _myOutReady :: Bool
+  }
+makeLenses 'MyInput
 
-type MyInput  = Record (FInput  MyPorts)
-type MyOutput = Record (FOutput MyPorts)
+data MyOutput = MyOutput
+  { _myOutData :: First Value
+  }
+  deriving (Generic, Default, NFDataX)
+  deriving Semigroup via GenericSemigroup MyOutput
+  deriving Monoid via GenericMonoid MyOutput
+makeLenses 'MyOutput
 
 data MyState = MyState
   { _count :: First Value
@@ -38,7 +49,7 @@ makeLenses 'MyState
 myFSM :: FSM' MyState MyInput MyOutput
 myFSM = FSM' $
   loop (const False) $
-  ( cond ((== 42) . (view $ qx @"In")) $
+  ( cond ((== 42) . (view $ myIn)) $
     ( embedS $ \_ -> do
         modify $ count %~ pure . (maybe 0 (+ 1)) . getFirst
         pure mempty
@@ -46,20 +57,17 @@ myFSM = FSM' $
     ( rmap snd . loop (isJust . getFirst . fst) $
       embedS $ \inp -> do
         cnt <- use count
-        pure $ if inp ^. qx @"Out" . qx @"Ready"
+        pure $ if inp ^. myOutReady
           then (mempty , mempty)
-          else (pure (), mempty & qx @"Out" . qx @"Data" .~ cnt)
+          else (pure (), mempty & myOutData .~ cnt)
     )
   )
 
-type TuInput = (Unsigned 8, ((Bool, ()), ()))
-type TuOutput = ((First (Unsigned 8), ()), ())
-
 myTop'
   :: HiddenClockResetEnable dom
-  => Signal dom TuInput
-  -> Signal dom TuOutput
-myTop' = tumapF $ case myFSM of
+  => Signal dom MyInput
+  -> Signal dom MyOutput
+myTop' = case myFSM of
   FSM' (FSM f) -> flip mealy (mempty, initial) $
     \(r, s) inp ->
       let (o, r', ms) = f (Just inp, r, s)
@@ -69,7 +77,7 @@ topEntity
   :: Clock System
   -> Reset System
   -> Enable System
-  -> Signal System TuInput
-  -> Signal System TuOutput
+  -> Signal System MyInput
+  -> Signal System MyOutput
 topEntity clk rst en =
   withClockResetEnable clk rst en myTop'
