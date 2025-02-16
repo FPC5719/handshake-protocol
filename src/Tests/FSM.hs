@@ -49,7 +49,7 @@ makeLenses 'MyState
 myFSM :: FSM' MyState MyInput MyOutput
 myFSM = FSM' $
   loop (const False) $
-  ( cond ((== 42) . (view $ myIn)) $
+  ( cond ((== 42) . (view $ myIn) . fst) $
     ( embedS $ \_ -> do
         modify $ count %~ pure . (maybe 0 (+ 1)) . getFirst
         pure mempty

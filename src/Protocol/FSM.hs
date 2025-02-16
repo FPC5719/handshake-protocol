@@ -67,6 +67,11 @@ embedS
   -> FSM r () i o
 embedS = embed . (runState .)
 
+skip
+  :: IsFSM r () i o
+  => FSM r () i o
+skip = embedS (const $ pure mempty)
+
 (&>)
   :: (IsFSM r s i o, IsFSM r t i o)
   => FSM r s i o
@@ -105,18 +110,45 @@ FSM f &! FSM g = fsm $ \(i, r, (ms, mt)) ->
 
 cond
   :: IsFSM r s i o
-  => (i -> Bool)
+  => ((i, r) -> Bool)
   -> FSM r s i o
   -> FSM r (Maybe s) i o
 cond p (FSM f) = fsm $ \(i, r, ms) ->
   let (fo, fr, fso) = f $ case ms of
-        Nothing -> if p i
+        Nothing -> if p (i, r)
           then (Just i , r, initial)
           else (Nothing, r, initial)
         Just s -> (Just i, r, s)
   in (fo, fr,) $ case fso of
     Nothing -> Nothing
     Just s  -> Just (Just s)
+
+condCase
+  :: ( IsFSM r s1 (i1, i) o
+     , IsFSM r s2 (i2, i) o
+     , IsFSM r (Either s1 s2) i o
+     )
+  => (r -> Either i1 i2)
+  -> FSM r s1 (i1, i) o
+  -> FSM r s2 (i2, i) o
+  -> FSM r (Maybe (Either s1 s2)) i o
+condCase p (FSM f1) (FSM f2) = fsm $ \(i, r, mes) ->
+  let l3 (x, y, z) = (x, y, Left <$> z)
+      r3 (x, y, z) = (x, y, Right <$> z)
+      (fo, fr, fso) = case mes of
+        Nothing -> case p r of
+          Left  i1 -> l3 $ f1 (Just (i1, i), r, initial)
+          Right i2 -> r3 $ f2 (Just (i2, i), r, initial)
+        Just (Left s1) -> case p r of
+          Left  i1 -> l3 $ f1 (Just (i1, i), r, s1)
+          Right _  -> r3 $ f2 (Nothing, r, initial) -- Should not happen
+        Just (Right s2) -> case p r of
+          Left  _  -> l3 $ f1 (Nothing, r, initial) -- Should not happen
+          Right i2 -> r3 $ f2 (Just (i2, i), r, s2)
+  in (fo, fr,) $ case fso of
+    Nothing -> Nothing
+    Just s -> Just (Just s)
+
 
 loop
   :: IsFSM r s i o

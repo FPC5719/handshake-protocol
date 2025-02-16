@@ -3,13 +3,13 @@ module Protocol.Handshake where
 import Protocol.FSM
 
 import Clash.Prelude
--- import Data.Monoid
 import Control.Lens
 
 
 
 data Ready = Ready
   { isReady :: Bool }
+  deriving (Generic, NFDataX)
 
 instance Semigroup Ready where
   Ready a <> Ready b = Ready (a || b)
@@ -19,6 +19,7 @@ instance Monoid Ready where
   mappend = (<>)
 
 data Channel a = Channel (Maybe a)
+  deriving (Generic, NFDataX)
 
 pattern Invalid :: Channel a
 pattern Invalid = Channel Nothing
