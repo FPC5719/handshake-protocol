@@ -88,9 +88,7 @@ common common-options
     mtl,
     generic-monoid,
     extra,
-    profunctors,
-    HList,
-    tagged
+    profunctors
 
 
 library
@@ -98,10 +96,8 @@ library
   hs-source-dirs: src
   exposed-modules:
     Protocol.FSM,
-    Protocol.Interface,
     Protocol.Handshake,
-    Protocol.AXILite,
-    Tests.FSM
+    Protocol.AXILite
   other-modules:
   default-language: Haskell2010
 
@@ -138,12 +134,10 @@ test-suite test-library
   ghc-options: -threaded
   main-is: unittests.hs
   other-modules:
-    -- Tests.FSM
+    Tests.Simple
   build-depends:
     handshake-protocol,
     QuickCheck,
-    clash-prelude-hedgehog,
-    hedgehog,
     tasty >= 1.2 && < 1.6,
-    tasty-hedgehog,
+    tasty-quickcheck,
     tasty-th

@@ -13,3 +13,9 @@ cabal build
 ```
 cabal haddock
 ```
+
+### Run tests
+
+```
+cabal test
+```

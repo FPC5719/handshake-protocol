@@ -9,7 +9,7 @@ import Control.Lens
 
 data Ready = Ready
   { isReady :: Bool }
-  deriving (Generic, NFDataX)
+  deriving (Generic, NFDataX, Lift, Eq)
 
 instance Semigroup Ready where
   Ready a <> Ready b = Ready (a || b)
@@ -19,7 +19,7 @@ instance Monoid Ready where
   mappend = (<>)
 
 data Channel a = Channel (Maybe a)
-  deriving (Generic, NFDataX)
+  deriving (Generic, NFDataX, Lift, Eq)
 
 pattern Invalid :: Channel a
 pattern Invalid = Channel Nothing
