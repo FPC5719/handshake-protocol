@@ -18,13 +18,15 @@ Motivations:
     with various hardware protocols.
 -}
 
+{-# LANGUAGE StandaloneKindSignatures #-}
+
 module Protocol.FSM where
 
 import Clash.Prelude
 import Control.Monad.State.Strict
 import Data.Profunctor
 
--- | Type with an initial value.
+-- | Type with an initial value. Used for implicit states.
 class Initial a where
   initial :: a
 
@@ -51,18 +53,14 @@ instance Initial a => Initial (Maybe a) where
 --     [@u@]: Data from the last FSM.
 --     [@v@]: Data to the next FSM.
 --
--- __!!!Update Needed!!!__
---
 -- @`FSM`@ is indeed a wrapper around the function type
--- @(i, r, `Maybe` s, `Maybe` u) -> (o, r, `Either` v s)@,
--- in which @`Maybe` s@ indicates whether running or not.
--- If running, @`Either` s v@ indicates whether terminating
--- and sending data to the next @`FSM`@ (@`Right` v@), or
--- stepping within the current @`FSM`@ and updating the
--- state (@`Left` s@).
---
--- For all @`FSM` f@, @f `Nothing` == (`mempty`, `Right`
--- `Nothing`)@ should always be satisfied.
+-- @`Maybe` (i, r, s, `Maybe` u) -> (o, r, `Either` s
+-- (`Maybe` v))@. The input @`Maybe`@ determines whether
+-- the @`FSM`@ is running or not. @`Either`@ in the output
+-- controls state transition, in which @`Left` s@ means
+-- updating the state of the current @`FSM`@, and
+-- @`Right` v@ means terminating the current @`FSM`@,
+-- sending data @v@ to the next @`FSM`@.
 data FSM r i o s u v
   = FSM
     { unFSM
@@ -70,7 +68,10 @@ data FSM r i o s u v
       -> (o, r, Either s (Maybe v))
     }
 
--- | Smart constructor handling when not running.
+-- | Smart constructor handling when the @`FSM`@ is not running.
+--
+-- Ensure that for all @`FSM` f@, @f `Nothing` == (`mempty`,
+-- `mempty`, `Right` `Nothing`)@.
 fsm
   :: IsFSM r i o s
   => ((i, r, s, Maybe u) -> (o, r, Either s (Maybe v)))
@@ -80,13 +81,14 @@ fsm f = FSM $ \case
   Just x -> f x
 
 -- | @`Profunctor`@ instance for @u@ @v@. __Note__:
--- for @i@ @o@ it is also a Profunctor, but less
+-- For @i@ @o@ it is also a Profunctor, but less
 -- frequently used.
 instance IsFSM r i o s => Profunctor (FSM r i o s) where
   dimap fl fr (FSM f) = fsm $ \(i, r, s, mu) ->
     (fmap . fmap . fmap $ fr) . f $ Just (i, r, s, fl <$> mu)
 
 -- | Constraint type for @`FSM`@.
+type IsFSM :: Type -> Type -> Type -> Type -> Constraint
 type IsFSM r i o s =
   ( NFDataX r, Monoid r
   , Monoid o
@@ -95,15 +97,14 @@ type IsFSM r i o s =
 
 -- | Wrap @`FSM`@ with existential type so that @s@ can be
 -- automatically determined and omitted. Meanwhile restrict
--- the type of @u@ and @v@ as @`()`@.
+-- the type of @u@ and @v@ as @()@.
 data FSM' r i o
   = forall s
   . IsFSM r i o s => FSM' (FSM r i o s () ())
 
 -- | Convert a @`FSM'`@ into a Mealy machine.
 mealyFSM'
-  :: ( HiddenClockResetEnable dom
-     )
+  :: HiddenClockResetEnable dom
   => FSM' r i o
   -> (Signal dom i -> Signal dom o)
 mealyFSM' (FSM' (FSM f)) = mealy go (mempty, initial)
@@ -119,6 +120,7 @@ embed
   :: IsFSM r i o ()
   => ((i, Maybe u) -> r -> ((o, Maybe v), r))
   -> FSM r i o () u v
+  -- ^ Finishes in one cycle so that @s ~ ()@.
 embed f = fsm $ \(i, r, (), mu) ->
   let ((o, mv), r') = f (i, mu) r
   in (o, r', Right mv)
@@ -128,31 +130,24 @@ embedS
   :: IsFSM r i o ()
   => ((i, Maybe u) -> State r (o, Maybe v))
   -> FSM r i o () u v
+  -- ^ Finishes in one cycle so that @s ~ ()@.
 embedS = embed . (runState .)
 
 -- | Skip a cycle.
 skip
   :: IsFSM r i o ()
   => FSM r i o () () ()
+  -- ^ Finishes in one cycle so that @s ~ ()@.
 skip = embedS (const $ pure (mempty, Nothing))
 
 
--- | Sequentially combine two @`FSM`@s. Consider:
---
--- > f :: FSM r i o s u v
--- > g :: FSM r i o t v w
--- > h = f &> g :: FSM r i o (Either s t) u w
---
--- When @h@ is invoked, it first invokes @f@ and blocks @g@.
--- When the returned state of @f@ (@`Either` s v@) reaches
--- @`Right` v@, @f@ is blocked and @g@ is invoked with result
--- @v@. When @g@ finishes, @h@ finishes.
+-- | Sequentially combine two @`FSM`@s.
 (&>)
   :: ( IsFSM r i o s
      , IsFSM r i o t
      )
-  => FSM r i o s u v
-  -> FSM r i o t v w
+  => FSM r i o s u v -- ^ Performs first.
+  -> FSM r i o t v w -- ^ Performs afterwards.
   -> FSM r i o (Either s t) u w
 FSM f &> FSM g = fsm $ \(i, r, est, mu) ->
   let (fo, fr, fesv) = f $ case est of
@@ -173,16 +168,6 @@ FSM f &> FSM g = fsm $ \(i, r, est, mu) ->
       Right mw -> Right mw
 
 -- | Combine two @`FSM`@s in parallel (Ensures both are finished).
--- Consider:
---
--- > f :: FSM r s i o
--- > g :: FSM r t i o
--- > h = f &| g :: FSM r (Maybe s, Maybe t) i o
---
--- When @h@ is invoked, @f@ and @g@ are invoked simultaneously.
--- When either @f@ or @g@ is finished, the finished one is blocked,
--- until the other one also finishes. When both @f@ and @g@ finished,
--- @h@ finishes.
 --
 --  __Note__: See also @`(&!)`@ for comparison.
 (&|)
@@ -192,6 +177,8 @@ FSM f &> FSM g = fsm $ \(i, r, est, mu) ->
   => FSM r i o s1 u1 ()
   -> FSM r i o s2 u2 ()
   -> FSM r i o (Maybe s1, Maybe s2) (u1, u2) ()
+  -- ^  No data is sent to the next @`FSM`@ (@v ~ ()@),
+  -- to avoid unintended registers.
 FSM f &| FSM g = fsm $ \(i, r, (ms1, ms2), mu12) ->
   let (fo, fr, fesv) = f $ case ms1 of
         Nothing -> Nothing
@@ -206,19 +193,6 @@ FSM f &| FSM g = fsm $ \(i, r, (ms1, ms2), mu12) ->
     (Right _ , Right _ ) -> Right (Just ())
 
 -- | Combine two @`FSM`@s in parallel (Ensures at least one is finished).
--- Consider:
---
--- > f :: FSM r s i o
--- > g :: FSM r t i o
--- > h = f &| g :: FSM r (Maybe s, Maybe t) i o
---
--- When @h@ is invoked, @f@ and @g@ are invoked simultaneously.
--- When either @f@ or @g@ is finished, or if both @f@ and @g@
--- finishes at the same time, @h@ finishes.
---
--- If one @`FSM`@ finishes before the other, the latter is
--- forced to terminate, which may or may not be the desired
--- behavior.
 --
 --  __Note__: See also @`(&|)`@ for comparison.
 (&!)
@@ -228,6 +202,8 @@ FSM f &| FSM g = fsm $ \(i, r, (ms1, ms2), mu12) ->
   => FSM r i o s1 u1 ()
   -> FSM r i o s2 u2 ()
   -> FSM r i o (s1, s2) (u1, u2) ()
+  -- ^  No data is sent to the next @`FSM`@ (@v ~ ()@),
+  -- to avoid unintended registers.
 FSM f &! FSM g = fsm $ \(i, r, (s1, s2), mu12) ->
   let (fo, fr, fesv) = f $ Just (i, r, s1, fst <$> mu12)
       (go, gr, gesv) = g $ Just (i, r, s2, snd <$> mu12)
@@ -235,7 +211,8 @@ FSM f &! FSM g = fsm $ \(i, r, (s1, s2), mu12) ->
     (Left s1', Left s2') -> Left (s1', s2')
     _ -> Right (Just ())
 
--- | Invoke one branch based on an @Either@ value.
+-- | Conditionally combine two @`FSM`@s, invoking one branch
+-- based on an @`Either`@ value.
 (&+)
   :: ( IsFSM r i o s1
      , IsFSM r i o s2
@@ -243,6 +220,8 @@ FSM f &! FSM g = fsm $ \(i, r, (s1, s2), mu12) ->
   => FSM r i o s1 u1 v
   -> FSM r i o s2 u2 v
   -> FSM r i o (Either () (Either s1 s2)) (Either u1 u2) v
+  -- ^ Cannot replace @`Either` () a@ with @`Maybe` a@, because
+  -- of the difference in @`Initial`@ instance.
 FSM f &+ FSM g = fsm $ \(i, r, ees, meu) ->
   let (fo, fr, fesv) = f $ case (ees, meu) of
         (Left (), Just (Left u1))  -> Just (i, r, initial, Just u1)
@@ -271,7 +250,7 @@ FSM f &+ FSM g = fsm $ \(i, r, ees, meu) ->
 -- The @`FSM`@ would be invoked for at least once.
 loop
   :: IsFSM r i o s
-  => (Maybe u -> Bool)
+  => (Maybe u -> Bool) -- ^ Predicate.
   -> FSM r i o s u u
   -> FSM r i o s u u
 loop p (FSM f) = fsm $ \(i, r, s, mu) ->
