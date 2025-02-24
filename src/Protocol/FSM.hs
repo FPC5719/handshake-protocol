@@ -23,7 +23,7 @@ Motivations:
 module Protocol.FSM where
 
 import Clash.Prelude
-import Control.Monad.State.Strict
+import Data.Either
 import Data.Profunctor
 
 -- | Type with an initial value. Used for implicit states.
@@ -32,6 +32,9 @@ class Initial a where
 
 instance Initial () where
   initial = ()
+
+instance Initial Bool where
+  initial = False
 
 instance (Initial a, Initial b) => Initial (Either a b) where
   initial = Left initial
@@ -65,19 +68,18 @@ data FSM r i o s u v
   = FSM
     { unFSM
       :: Maybe (i, r, s, Maybe u)
-      -> (o, r, Either s (Maybe v))
+      -> Either (o, r, s) (Maybe v)
     }
 
 -- | Smart constructor handling when the @`FSM`@ is not running.
 --
--- Ensure that for all @`FSM` f@, @f `Nothing` == (`mempty`,
--- `mempty`, `Right` `Nothing`)@.
+-- Ensure that for all @`FSM` f@, @f `Nothing` == `Right` `Nothing`@.
 fsm
   :: IsFSM r i o s
-  => ((i, r, s, Maybe u) -> (o, r, Either s (Maybe v)))
+  => ((i, r, s, Maybe u) -> Either (o, r, s) (Maybe v))
   -> FSM r i o s u v
 fsm f = FSM $ \case
-  Nothing -> (mempty, mempty, Right Nothing)
+  Nothing -> Right Nothing
   Just x -> f x
 
 -- | @`Profunctor`@ instance for @u@ @v@. __Note__:
@@ -85,7 +87,7 @@ fsm f = FSM $ \case
 -- frequently used.
 instance IsFSM r i o s => Profunctor (FSM r i o s) where
   dimap fl fr (FSM f) = fsm $ \(i, r, s, mu) ->
-    (fmap . fmap . fmap $ fr) . f $ Just (i, r, s, fl <$> mu)
+    (fmap . fmap $ fr) . f $ Just (i, r, s, fl <$> mu)
 
 -- | Constraint type for @`FSM`@.
 type IsFSM :: Type -> Type -> Type -> Type -> Constraint
@@ -110,35 +112,28 @@ mealyFSM'
 mealyFSM' (FSM' (FSM f)) = mealy go (mempty, initial)
   where
     go (r, s) i =
-      let (o, r', esv) = f $ Just (i, r, s, Just ())
-          s' = either id (const initial) esv
-      in ((r', s'), o)
+      case f $ Just (i, r, s, Just ()) of
+        Left (o, r', s') -> ((r', s'), o)
+        Right _ -> ((mempty, initial), mempty)
 
 -- | Embed a state transition into a @`FSM`@, which takes
 -- one cycle to perform.
 embed
-  :: IsFSM r i o ()
-  => ((i, Maybe u) -> r -> ((o, Maybe v), r))
-  -> FSM r i o () u v
+  :: IsFSM r i o Bool
+  => ((i, r) -> (Maybe u -> (o, r), Maybe v))
+  -> FSM r i o Bool u v
   -- ^ Finishes in one cycle so that @s ~ ()@.
-embed f = fsm $ \(i, r, (), mu) ->
-  let ((o, mv), r') = f (i, mu) r
-  in (o, r', Right mv)
-
--- | Embed a @`State`@ Monad.
-embedS
-  :: IsFSM r i o ()
-  => ((i, Maybe u) -> State r (o, Maybe v))
-  -> FSM r i o () u v
-  -- ^ Finishes in one cycle so that @s ~ ()@.
-embedS = embed . (runState .)
+embed f = fsm $ \(i, r, b, mu) ->
+  let (g, mv) = f (i, r)
+      (o, r') = g mu
+  in if b then Right mv else Left (o, r', True)
 
 -- | Skip a cycle.
 skip
-  :: IsFSM r i o ()
-  => FSM r i o () () ()
+  :: IsFSM r i o Bool
+  => FSM r i o Bool () ()
   -- ^ Finishes in one cycle so that @s ~ ()@.
-skip = embedS (const $ pure (mempty, Nothing))
+skip = embed $ \(_, r) -> ((\_ -> (mempty, r)), Just ())
 
 
 -- | Sequentially combine two @`FSM`@s.
@@ -150,22 +145,21 @@ skip = embedS (const $ pure (mempty, Nothing))
   -> FSM r i o t v w -- ^ Performs afterwards.
   -> FSM r i o (Either s t) u w
 FSM f &> FSM g = fsm $ \(i, r, est, mu) ->
-  let (fo, fr, fesv) = f $ case est of
-        Left s -> Just (i, r, s, mu)
+  let fe = f $ case est of
+        Left s  -> Just (i, r, s, mu)
         Right _ -> Nothing
-      mv = case fesv of
-        Left _ -> Nothing
-        Right x -> x
-      (go, gr, getw) = g $ case est of
-        Left _ -> Nothing
-        Right t -> Just (i, fr, t, mv)
-  in (fo `mappend` go, gr,) $ case est of
-    Left  _ -> case fesv of
-      Left s' -> Left (Left s')
-      Right _ -> Left (Right initial)
-    Right _ -> case getw of
-      Left t' -> Left (Right t')
-      Right mw -> Right mw
+      ge = g $ case (est, fe) of
+        -- If @f@ is still running, block @g@.
+        (Left _ , Left _  ) -> Nothing
+        -- If @f@ ends, invoke @g@ and forward @v@.
+        (Left _ , Right mv) -> Just (i, r, initial, mv)
+        -- If @g@ is running, go on.
+        (Right t, _       ) -> Just (i, r, t, Nothing)
+  in case (est, fe) of
+    (Left _, Left (o, r', s')) -> Left (o, r', Left s')
+    _ -> case ge of
+           Left (o, r', t')    -> Left (o, r', Right t')
+           Right mw            -> Right mw
 
 -- | Combine two @`FSM`@s in parallel (Ensures both are finished).
 --
@@ -180,17 +174,14 @@ FSM f &> FSM g = fsm $ \(i, r, est, mu) ->
   -- ^  No data is sent to the next @`FSM`@ (@v ~ ()@),
   -- to avoid unintended registers.
 FSM f &| FSM g = fsm $ \(i, r, (ms1, ms2), mu12) ->
-  let (fo, fr, fesv) = f $ case ms1 of
-        Nothing -> Nothing
-        Just s1 -> Just (i, r, s1, fst <$> mu12)
-      (go, gr, gesv) = g $ case ms2 of
-        Nothing -> Nothing
-        Just s2 -> Just (i, r, s2, snd <$> mu12)
-  in (fo `mappend` go, fr `mappend` gr,) $ case (fesv, gesv) of
-    (Left s1', Left s2') -> Left (Just s1', Just s2')
-    (Left s1', Right _ ) -> Left (Just s1', Nothing )
-    (Right _ , Left s2') -> Left (Nothing , Just s2')
-    (Right _ , Right _ ) -> Right (Just ())
+  let fe = f $ fmap (i, r, , fst <$> mu12) ms1
+      ge = g $ fmap (i, r, , snd <$> mu12) ms2
+      p = either (\(x, y, z) -> (x, y, Just z)) (const (mempty, mempty, Nothing))
+      (fo, fr, s') = p fe
+      (go, gr, t') = p ge
+  in if isLeft fe || isLeft ge
+     then Left (fo `mappend` go, fr `mappend` gr, (s', t'))
+     else Right (Just ())
 
 -- | Combine two @`FSM`@s in parallel (Ensures at least one is finished).
 --
@@ -205,12 +196,13 @@ FSM f &| FSM g = fsm $ \(i, r, (ms1, ms2), mu12) ->
   -- ^  No data is sent to the next @`FSM`@ (@v ~ ()@),
   -- to avoid unintended registers.
 FSM f &! FSM g = fsm $ \(i, r, (s1, s2), mu12) ->
-  let (fo, fr, fesv) = f $ Just (i, r, s1, fst <$> mu12)
-      (go, gr, gesv) = g $ Just (i, r, s2, snd <$> mu12)
-  in (fo `mappend` go, fr `mappend` gr,) $ case (fesv, gesv) of
-    (Left s1', Left s2') -> Left (s1', s2')
+  let fe = f $ Just (i, r, s1, fst <$> mu12)
+      ge = g $ Just (i, r, s2, snd <$> mu12)
+  in case (fe, ge) of
+    (Left (fo, fr, s'), Left (go, gr, t')) ->
+      Left (fo `mappend` go, fr `mappend` gr, (s', t'))
     _ -> Right (Just ())
-
+{-
 -- | Conditionally combine two @`FSM`@s, invoking one branch
 -- based on an @`Either`@ value.
 (&+)
@@ -224,18 +216,25 @@ FSM f &! FSM g = fsm $ \(i, r, (s1, s2), mu12) ->
   -- of the difference in @`Initial`@ instance.
 FSM f &+ FSM g = fsm $ \(i, r, ees, meu) ->
   let (fo, fr, fesv) = f $ case (ees, meu) of
+        -- Init and select Left.
         (Left (), Just (Left u1))  -> Just (i, r, initial, Just u1)
+        -- Continuing with Left.
         (Right (Left s1), _)       -> Just (i, r, s1, Nothing)
         _                          -> Nothing
       (go, gr, gesv) = g $ case (ees, meu) of
+        -- Init and select Right.
         (Left (), Just (Right u2)) -> Just (i, r, initial, Just u2)
+        -- Continuing with Right.
         (Right (Right s2), _)      -> Just (i, r, s2, Nothing)
         _                          -> Nothing
+      -- Calculate the next state.
       nst = case (ees, meu) of
+        -- Leave the initial state.
         (Left (), Just (Left _))  -> Just (Left  ())
         (Right (Left _), _)       -> Just (Left  ())
         (Left (), Just (Right _)) -> Just (Right ())
         (Right (Right _), _)      -> Just (Right ())
+        -- Stay at the initial state.
         (Left (), Nothing)        -> Nothing
   in case nst of
     Nothing -> (mempty, mempty, Left (Left ()))
@@ -245,18 +244,17 @@ FSM f &+ FSM g = fsm $ \(i, r, ees, meu) ->
     Just (Right ()) -> (go, gr,) $ case gesv of
       Left s' -> Left (Right (Right s'))
       Right v -> Right v
-
+-}
 -- | Loop until the predicate is satisfied.
 -- The @`FSM`@ would be invoked for at least once.
 loop
   :: IsFSM r i o s
   => (Maybe u -> Bool) -- ^ Predicate.
-  -> FSM r i o s u u
-  -> FSM r i o s u u
-loop p (FSM f) = fsm $ \(i, r, s, mu) ->
-  let (fo, fr, fesu) = f $ Just (i, r, s, mu)
-  in (fo, fr,) $ case fesu of
-    Left s' -> Left s'
-    Right mu' -> if p mu'
-      then Right mu'
-      else Left initial
+  -> FSM r i o s () u
+  -> FSM r i o s () u
+loop p (FSM f) = fsm $ \(i, r, s, mx) ->
+  case f $ Just (i, r, s, mx) of
+    Left (o, r', s') -> Left (o, r', s')
+    Right mu -> if p mu
+      then Right mu
+      else Left (mempty, mempty, initial)

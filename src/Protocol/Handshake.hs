@@ -35,18 +35,25 @@ instance Monoid (Channel a) where
   mempty = Channel Nothing
   mappend = (<>)
 
-isValid :: Channel a -> Bool
-isValid Invalid = False
-isValid (Valid _) = True
+
+class Validated a where
+  isValid :: a -> Bool
+
+instance Validated Ready where
+  isValid = isReady
+
+instance Validated (Channel a) where
+  isValid (Valid _) = True
+  isValid Invalid = False
 
 
 
 send
-  :: IsFSM r () i o
+  :: IsFSM r i o ()
   => Getter i Ready
   -> Setter' o (Channel a)
   -> Getter r a
-  -> FSM r () i o
+  -> FSM r i o () u v
 send ready out reg =
   rmap snd . loop (isReady . fst) . embedS $ \inp -> do
   x <- use reg
