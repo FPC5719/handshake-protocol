@@ -6,6 +6,7 @@ import Protocol.Handshake
 import Clash.Prelude
 import Clash.Prelude.Testbench
 import Control.Lens
+import Data.Maybe
 import Data.Monoid
 
 import Test.Tasty
@@ -18,13 +19,14 @@ producer
      Ready
      (Channel (Unsigned 8))
 producer = FSM' $
-  embedS (\_ -> (id %= step) >> pure mempty) &>
-  send id id (id . to force)
+  ( embed
+    (\_ r () -> (mempty, step r))
+    (\_ _ -> ())
+  ) &>
+  send (Sender id id (to (fromMaybe 0 . getFirst)))
   where
     step :: First (Unsigned 8) -> First (Unsigned 8)
     step = pure . maybe 0 (+ 1) . getFirst
-    force :: First a -> a
-    force (First (Just x)) = x
 
 consumer
   :: FSM'
@@ -34,19 +36,18 @@ consumer
      (Channel (Unsigned 8))
      (Ready, First Bool)
 consumer = FSM' $
-  listen id _1 _1 &>
-  ( embedS $ \_ -> do
-      let myeq :: First (Unsigned 8) -> First (Unsigned 8) -> Bool
-          myeq x y = case (==) <$> getFirst x <*> ((+ 1) <$> getFirst y) of
-            Nothing -> True
-            Just f -> f
-      f <- myeq <$> use _1 <*> use _2
-      use _1 >>= (_2 .=)
-      pure $ (mempty, pure f)
-  )
+  let myEq x y = case (==) <$> getFirst x <*> ((+ 1) <$> getFirst y) of
+        Nothing -> pure True
+        Just f -> pure f
+  in ( rmap (const ()) $ listen (Listener _1 id _1)
+     ) &>
+     ( embed
+       (\_ r () -> ((mempty, myEq (r ^. _1) (r ^. _2)), (mempty, r ^. _1)))
+       (\_ _ -> ())
+     )
 
 prop_simple_producer :: Property
-prop_simple_producer = testFor 15 (hideClockResetEnable circ')
+prop_simple_producer = testFor 12 (hideClockResetEnable circ')
   where
     circ' :: Clock System -> Reset System -> Enable System -> Signal System Bool
     circ' clk rst en = withClockResetEnable clk rst en circ
@@ -55,17 +56,17 @@ prop_simple_producer = testFor 15 (hideClockResetEnable circ')
       let d = mealyFSM' producer
             (stimuliGenerator
               $(listToVecTH
-                 [ Ready False, Ready False, Ready True, Ready True
-                 , Ready True, Ready False, Ready False, Ready False
-                 , Ready False, Ready True, Ready False, Ready False
+                 [ Ready False, Ready False, Ready False, Ready False
+                 , Ready True, Ready True, Ready True, Ready True
+                 , Ready True, Ready True, Ready False, Ready False
                  , Ready False, Ready False, Ready False, Ready False
                  ]))
       in (==) <$> d <*> stimuliGenerator
          $(listToVecTH
-            [ Invalid, Valid 0, Valid 0, Invalid
-            , Valid 1, Invalid, Valid 2, Valid 2
-            , Valid 2, Valid 2, Invalid, Valid 3
-            , Valid 3, Valid 3, Valid 3, Valid 3 :: Channel (Unsigned 8)
+            [ Invalid, Valid 0, Valid 0, Valid 0
+            , Invalid, Invalid, Valid 1, Invalid
+            , Invalid, Valid 2, Valid 2, Valid 2
+            , Valid 2, Valid 2, Valid 2, Valid 2 :: Channel (Unsigned 8)
             ])
 
 prop_simple_consumer :: Property

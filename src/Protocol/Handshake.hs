@@ -1,15 +1,15 @@
 module Protocol.Handshake where
 
 import Protocol.FSM
+import Protocol.Boolish
 
 import Clash.Prelude
 import Control.Lens
 
 
 
-data Ready = Ready
-  { isReady :: Bool }
-  deriving (Generic, NFDataX, Lift, Eq)
+data Ready = Ready Bool
+  deriving (Generic, NFDataX, Lift, Eq, Show)
 
 instance Semigroup Ready where
   Ready a <> Ready b = Ready (a || b)
@@ -18,8 +18,11 @@ instance Monoid Ready where
   mempty = Ready False
   mappend = (<>)
 
+instance Boolish Ready where
+  boolify (Ready x) = x
+
 data Channel a = Channel (Maybe a)
-  deriving (Generic, NFDataX, Lift, Eq)
+  deriving (Generic, NFDataX, Lift, Eq, Show)
 
 pattern Invalid :: Channel a
 pattern Invalid = Channel Nothing
@@ -35,42 +38,46 @@ instance Monoid (Channel a) where
   mempty = Channel Nothing
   mappend = (<>)
 
-
-class Validated a where
-  isValid :: a -> Bool
-
-instance Validated Ready where
-  isValid = isReady
-
-instance Validated (Channel a) where
-  isValid (Valid _) = True
-  isValid Invalid = False
+instance Boolish (Channel a) where
+  boolify (Channel m) = boolify m
 
 
+data Sender r i o a
+  = Sender
+    (Getter  i Ready)
+    (Setter' o (Channel a))
+    (Getter  r a)
 
 send
   :: IsFSM r i o ()
-  => Getter i Ready
-  -> Setter' o (Channel a)
-  -> Getter r a
-  -> FSM r i o () u v
-send ready out reg =
-  rmap snd . loop (isReady . fst) . embedS $ \inp -> do
-  x <- use reg
-  pure (inp ^. ready, mempty & out .~ Valid x)
+  => Sender r i o a
+  -> FSM r i o () () ()
+send (Sender rd ch dat) = FSM $ \i r ->
+  let o = mempty & ch .~ Valid (r ^. dat)
+  in \case
+    Left () -> if boolify (i ^. rd)
+      then Right ()
+      else Left (o, r, ())
+    Right () -> Left (o, r, ())
+
+
+data Listener r i o a
+  =  forall f
+  .  (Monoid (f a), Applicative f)
+  => Listener
+     (Setter' o Ready)
+     (Getter  i (Channel a))
+     (Setter' r (f a))
 
 listen
-  :: ( IsFSM r () i o
-     , Monoid (f a)
-     , Applicative f
-     )
-  => Getter i (Channel a)
-  -> Setter' o Ready
-  -> Setter' r (f a)
-  -> FSM r () i o
-listen value ready reg =
-  rmap snd . loop (isValid . fst) . embedS $ \inp -> do
-  case inp ^. value of
-    Invalid -> reg .= mempty
-    Valid x -> reg .= pure x
-  pure (inp ^. value, mempty & ready .~ Ready True)
+  :: IsFSM r i o ()
+  => Listener r i o a
+  -> FSM r i o () () a
+listen (Listener rd ch dat) = FSM $ \i r ->
+  let o = mempty & rd .~ Ready True
+      r' = r & dat .~ mempty
+  in \case
+    Left () -> case i ^. ch of
+      Invalid -> Left (o, r', ())
+      Valid x -> Right x
+    Right ()  -> Left (o, r', ())
