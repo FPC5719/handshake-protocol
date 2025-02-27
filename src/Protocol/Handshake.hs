@@ -49,16 +49,15 @@ data Sender r i o a
     (Getter  r a)
 
 send
-  :: IsFSM r i o ()
+  :: IsFSM r i o Bool
   => Sender r i o a
-  -> FSM r i o () () ()
+  -> FSM r i o Bool () ()
 send (Sender rd ch dat) = FSM $ \i r ->
   let o = mempty & ch .~ Valid (r ^. dat)
   in \case
-    Left () -> if boolify (i ^. rd)
-      then Right ()
-      else Left (o, r, ())
-    Right () -> Left (o, r, ())
+    Left False -> Left (o, r, boolify (i ^. rd))
+    Left True  -> Right ()
+    Right ()   -> Left (o, r, boolify (i ^. rd))
 
 
 data Listener r i o a
@@ -70,14 +69,16 @@ data Listener r i o a
      (Setter' r (f a))
 
 listen
-  :: IsFSM r i o ()
+  :: IsFSM r i o Bool
   => Listener r i o a
-  -> FSM r i o () () a
+  -> FSM r i o Bool () ()
 listen (Listener rd ch dat) = FSM $ \i r ->
   let o = mempty & rd .~ Ready True
-      r' = r & dat .~ mempty
   in \case
-    Left () -> case i ^. ch of
-      Invalid -> Left (o, r', ())
-      Valid x -> Right x
-    Right ()  -> Left (o, r', ())
+    Left False -> case i ^. ch of
+      Invalid -> Left (o, r & dat .~ mempty, False)
+      Valid x -> Left (o, r & dat .~ pure x, True)
+    Left True -> Right ()
+    Right ()  -> case i ^. ch of
+      Invalid -> Left (o, r & dat .~ mempty, False)
+      Valid x -> Left (o, r & dat .~ pure x, True)
