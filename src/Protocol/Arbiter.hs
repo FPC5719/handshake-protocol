@@ -33,11 +33,12 @@ arbiter
   -> FSM'
      (r, First (Index n))
      (Vec n req , resp)
-     (Vec n resp, req )
+     (Vec n resp, req , First (Index n))
 arbiter rule (Arbitrable lb lrq lrp) =
   let grant idx (vec, resp) =
         ( mempty & ix idx .~ resp
         , vec ^. ix idx
+        , pure idx
         )
       getBV vec = v2bv $
         vec & traverse %~ (boolToBit . boolify . view lb)
@@ -47,8 +48,8 @@ arbiter rule (Arbitrable lb lrq lrp) =
   in FSM' $
      ( loop_ id $ embed_
        ( \(vec, resp) (r, _) -> case rule (getBV vec, r) of
-           (Nothing , r') -> (mempty               , (r', mempty  ), False)
-           (Just idx, r') -> (grant idx (vec, resp), (r', pure idx), True )
+             (Nothing , r') -> (mempty               , (r', mempty  ), False)
+             (Just idx, r') -> (grant idx (vec, resp), (r', pure idx), True )
        )
      ) &>
      ( loop_ id $ embed_

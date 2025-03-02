@@ -31,30 +31,32 @@ randBlock st l = FSM $ \_ r -> \case
     in Left (mempty, r & l .~ pure (lfsr seed), seed)
 
 producer
-  :: FSM'
+  :: Unsigned 4
+  -> FSM'
      (First (Unsigned 8), First (Unsigned 4))
      Ready
      (Channel (Unsigned 8))
-producer = FSM' $
+producer st = FSM' $
   ( embed
     (\_ r () -> (mempty, (step (r ^. _1), r ^. _2)))
     (\_ _ -> ())
   ) &>
   send (Sender id id (_1 . to (fromMaybe 0 . getFirst))) &>
-  randBlock 3 _2
+  randBlock st _2
   where
     step :: First (Unsigned 8) -> First (Unsigned 8)
     step = pure . maybe 0 (+ 1) . getFirst
 
 consumer
-  :: FSM'
+  :: Unsigned 4
+  -> FSM'
      ( First (Unsigned 8)
      , First (Unsigned 8)
      , First (Unsigned 4)
      )
      (Channel (Unsigned 8))
      (Ready, First Bool)
-consumer = FSM' $
+consumer st = FSM' $
   let myEq x y = case (==) <$> getFirst x <*> ((+ 1) <$> getFirst y) of
         Nothing -> pure True
         Just f -> pure f
@@ -63,7 +65,7 @@ consumer = FSM' $
        (\_ r () -> ((mempty, myEq (r ^. _1) (r ^. _2)), (mempty, r ^. _1, r ^. _3)))
        (\_ _ -> ())
      ) &>
-     randBlock 5 _3
+     randBlock st _3
 {-
 prop_simple_producer :: Property
 prop_simple_producer = testFor 12 (hideClockResetEnable circ')
@@ -118,8 +120,8 @@ prop_simple = testFor 100 (hideClockResetEnable circ')
     circ' clk rst en = withClockResetEnable clk rst en circ
     circ :: HiddenClockResetEnable dom => Signal dom Bool
     circ =
-      let d = mealyFSM' producer r
-          (r, f) = unbundle $ mealyFSM' consumer d
+      let d = mealyFSM' (producer 3) r
+          (r, f) = unbundle $ mealyFSM' (consumer 5) d
           check x = case getFirst x of
             Just False -> False
             _ -> True
