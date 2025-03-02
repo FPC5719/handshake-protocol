@@ -23,7 +23,8 @@ Motivations:
 module Protocol.FSM where
 
 import Clash.Prelude
-import Data.Profunctor
+import Control.Lens
+-- import Data.Profunctor
 
 
 
@@ -102,6 +103,35 @@ embed
 embed f g = FSM $ \i r -> \case
   Left () -> Right (g i r)
   Right u -> let (o, r') = f i r u in Left (o, r', ())
+
+-- | A state transition can be seen as a @`Lens`@, and
+-- therefore can be embedded.
+embedL
+  :: IsFSM r i o ()
+  => Lens (i, r) (o, r) v u
+  -> FSM r i o () u v
+embedL l = embed
+  (\i r u -> (i, r) & l .~ u)
+  (\i r -> getConst $ l Const (i, r))
+
+-- | Embed when @u ~ ()@.
+embed_
+  :: IsFSM r i o ()
+  => (i -> r -> (o, r, v))
+  -> FSM r i o () () v
+embed_ f = embed
+  (\i r () -> let (o, r', _) = f i r in (o, r'))
+  (\i r    -> let (_, _ , v) = f i r in v      )
+
+-- | Embed a Moore Machine.
+embedMoore
+  :: IsFSM r i o ()
+  => (r -> u -> r)
+  -> (r -> v)
+  -> FSM r i o () u v
+embedMoore f g = embed
+  (\_ r u -> (mempty, f r u))
+  (\_ r -> g r)
 
 -- | Skip a cycle.
 skip
@@ -233,3 +263,13 @@ loop p (FSM f) = FSM $ \i r ems ->
     Right u -> if p u
       then Right u -- Predicate is satisfied
       else Left (mempty, r, Nothing) -- Restart
+
+-- | Loop, and ignore the result.
+loop_
+  :: IsFSM r i o s
+  => (u -> Bool)
+  -> FSM r i o s () u
+  -- ^ @u@ is used for predicate.
+  -> FSM r i o (Maybe s) () ()
+  -- ^ Replace @u@ with @()@.
+loop_ = (rmap (const ()) .) . loop
